@@ -449,7 +449,7 @@ def find_candidates(store: Path, needle: str) -> List[Path]:
         return [exact]
     hits = []
     for p in store.rglob(f"*{FILE_EXT}"):
-        if p.stem.endswith(Path(needle).name):
+        if needle in p.stem:
             hits.append(p)
     return hits
 

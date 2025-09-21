@@ -99,7 +99,8 @@ def _fmt_tag(t: str) -> str:
 
 def build_text(meta: Dict[str, Any], body: str) -> str:
     """Render front matter with ordered keys; lists as [a, b] with quoting when needed."""
-    m = _normalize_meta({k: v for k, v in meta.items() if v not in (None, "", [])})
+    m = _normalize_meta(meta)
+    m = {k: v for k, v in m.items() if v not in (None, "", [])}
     order = ["url", "title", "tags", "created", "modified", "notes"]
     keys = [k for k in order if k in m] + [k for k in m if k not in order]
     lines = [FM_START]

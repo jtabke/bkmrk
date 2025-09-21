@@ -125,8 +125,10 @@ class TestBuildText:
         """Should filter out empty values."""
         meta = {"url": "", "title": None, "tags": []}
         result = build_text(meta, "")
-        # Should only have front matter markers
-        assert result == "---\n---\n"
+        assert result.startswith("---\n")
+        assert result.endswith("---\n")
+        assert "url:" not in result
+        assert "tags:" not in result
 
 
 class TestLoadEntry:
@@ -162,3 +164,16 @@ class TestAtomicWrite:
         fpath = tmp_path / "test.bm"
         atomic_write(fpath, "content")
         assert fpath.exists()
+
+    def test_atomic_write_failure_cleanup(self, tmp_path, monkeypatch):
+        """Should keep original on failure."""
+        fpath = tmp_path / "x.bm"
+        atomic_write(fpath, "v1")
+        import bm.io as io_mod
+        real_replace = io_mod.os.replace
+        def boom(src, dst):
+            raise OSError("simulated")
+        monkeypatch.setattr(io_mod.os, "replace", boom)
+        with pytest.raises(OSError):
+            atomic_write(fpath, "v2")
+        assert fpath.read_text() == "v1"

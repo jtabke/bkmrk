@@ -1,11 +1,19 @@
 """Unit tests for bm.utils module."""
 
+import re
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from bm.utils import (
-    iso_now, parse_iso, to_epoch, normalize_slug, _reject_unsafe,
-    is_relative_to, id_to_path, create_slug_from_url, rid
+    iso_now,
+    parse_iso,
+    to_epoch,
+    normalize_slug,
+    _reject_unsafe,
+    is_relative_to,
+    id_to_path,
+    create_slug_from_url,
+    rid,
 )
 
 
@@ -20,10 +28,15 @@ class TestIsoNow:
     def test_format(self):
         """Should be in ISO format with timezone."""
         result = iso_now()
-        # Should match YYYY-MM-DDTHH:MM:SS±HH:MM
-        assert len(result) >= 19  # minimum length
-        assert 'T' in result
-        assert '+' in result or '-' in result
+        ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
+        assert ISO_RE.match(result)
+
+    def test_iso_now_shape_and_parseable(self):
+        """Should be parseable and close to now."""
+        s = iso_now()
+        dt = parse_iso(s)
+        assert dt is not None
+        assert abs(dt.timestamp() - datetime.now(dt.tzinfo).timestamp()) < 2.5
 
 
 class TestParseIso:
@@ -76,9 +89,14 @@ class TestToEpoch:
 
     def test_epoch_conversion(self):
         """Should convert datetime to epoch timestamp."""
-        dt = datetime(2023, 1, 15, 10, 30, 45, tzinfo=timezone.utc)
+        dt = datetime(2023, 1, 15, 21, 10, 45, tzinfo=timezone.utc)
         epoch = to_epoch(dt)
-        assert epoch == 1673776245
+        assert epoch == 1673817045
+
+    def test_to_epoch_offset(self):
+        """Should handle offset datetimes."""
+        offset = datetime(2023, 1, 15, 22, 10, 45, tzinfo=timezone(timedelta(hours=1)))
+        assert to_epoch(offset) == 1673817045
 
 
 class TestNormalizeSlug:
@@ -161,7 +179,7 @@ class TestCreateSlugFromUrl:
         """Should create slug from URL."""
         slug = create_slug_from_url("https://example.com/path")
         assert "example-com" in slug
-        assert slug.endswith("-" + "d" * 7)  # short hash
+        assert re.search(r"-[0-9a-f]{7}$", slug)
 
     def test_no_path(self):
         """Should handle URL without path."""
@@ -185,3 +203,10 @@ class TestRid:
         rid1 = rid("https://example.com")
         rid2 = rid("https://example.org")
         assert rid1 != rid2
+
+    def test_rid_shape_and_hex(self):
+        """Should be 12 hex chars."""
+        h = rid("https://example.com")
+        assert len(h) == 12
+        assert re.fullmatch(r"[0-9a-f]{12}", h)
+

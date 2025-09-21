@@ -29,5 +29,6 @@ class Bookmark:
             "tags": self.tags,
             "created": self.created,
             "modified": self.modified,
+            "notes": self.notes,
         }
         return {k: v for k, v in meta.items() if v not in (None, "", [])}

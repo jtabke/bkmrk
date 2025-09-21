@@ -33,7 +33,19 @@ class TestCmdInit:
         with patch('subprocess.run') as mock_run:
             cmd_init(args)
 
-        mock_run.assert_called_with(["git", "init"], cwd=store)
+        mock_run.assert_called_once_with(["git", "init"], cwd=store)
+
+    def test_init_without_git_does_not_call_git(self, tmp_path):
+        """Should not call git if not requested."""
+        store = tmp_path / "store"
+        args = MagicMock()
+        args.store = str(store)
+        args.git = False
+
+        with patch('subprocess.run') as mock_run:
+            cmd_init(args)
+
+        mock_run.assert_not_called()
 
 
 class TestCmdAdd:
@@ -65,6 +77,33 @@ class TestCmdAdd:
         assert "url: https://example.com" in content
         assert "title: Example" in content
         assert "tags: [tag1, tag2]" in content
+
+    def test_add_force_overwrite(self, tmp_path):
+        """Should overwrite with --force."""
+        store = tmp_path / "store"
+        store.mkdir()
+        args = MagicMock()
+        args.store = str(store)
+        args.url = "https://example.com"
+        args.id = None
+        args.path = None
+        args.name = "Example"
+        args.tags = "tag1,tag2"
+        args.description = "Notes"
+        args.force = False
+        args.edit = False
+
+        with patch('bm.commands._launch_editor'):
+            cmd_add(args)
+
+        # Second add without force should fail
+        with patch('bm.commands._launch_editor'):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
+        args.force = True
+        with patch('bm.commands._launch_editor'):
+            cmd_add(args)  # Should succeed
 
 
 class TestResolveIdOrPath:
@@ -98,6 +137,13 @@ url: https://example.com
         result = resolve_id_or_path(store, "test")
         assert result == fpath
 
+    def test_resolve_not_found(self, tmp_path):
+        """Should return None for not found id."""
+        store = tmp_path / "store"
+        store.mkdir()
+        result = resolve_id_or_path(store, "does-not-exist")
+        assert result is None
+
 
 class TestFindCandidates:
     """Test find_candidates function."""
@@ -121,3 +167,9 @@ class TestFindCandidates:
 
         result = find_candidates(store, "test")
         assert result == [fpath]
+
+    def test_find_candidates_none(self, tmp_path):
+        """Should return empty list for no matches."""
+        store = tmp_path / "store"
+        store.mkdir()
+        assert find_candidates(store, "nope") == []

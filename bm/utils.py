@@ -69,9 +69,9 @@ def to_epoch(dt: Optional[datetime]) -> Optional[int]:
 
 def normalize_slug(s: str) -> str:
     """Normalize string to a slug."""
-    s = s.strip().strip("/").replace(" ", "-")
+    s = s.lower().strip().strip("/").replace(" ", "-")
     s = re.sub(r"[^\w\-/\.]", "-", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
+    s = re.sub(r"-{2,}", "-", s)
     return s or "untitled"
 
 
