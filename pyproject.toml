@@ -16,6 +16,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
 [project.scripts]
 bm = "bm.cli:main"
 
@@ -34,3 +40,9 @@ ignore = ["E501"]  # line too long, handled by formatter
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
