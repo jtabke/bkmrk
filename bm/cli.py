@@ -3,20 +3,20 @@
 import argparse
 
 from .commands import (
-    cmd_init,
     cmd_add,
-    cmd_show,
-    cmd_open,
-    cmd_list,
-    cmd_search,
     cmd_edit,
-    cmd_rm,
-    cmd_mv,
-    cmd_tags,
-    cmd_tag,
     cmd_export,
     cmd_import,
+    cmd_init,
+    cmd_list,
+    cmd_mv,
+    cmd_open,
+    cmd_rm,
+    cmd_search,
+    cmd_show,
     cmd_sync,
+    cmd_tag,
+    cmd_tags,
 )
 
 
@@ -110,4 +110,3 @@ def main() -> None:
 
     args = ap.parse_args()
     args.func(args)
-

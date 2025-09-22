@@ -1,8 +1,14 @@
 """Unit tests for bm.io module."""
 
 import pytest
+
 from bm.io import (
-    _normalize_meta, parse_front_matter, _fmt_tag, build_text, load_entry, atomic_write
+    _fmt_tag,
+    _normalize_meta,
+    atomic_write,
+    build_text,
+    load_entry,
+    parse_front_matter,
 )
 
 
@@ -34,7 +40,12 @@ class TestNormalizeMeta:
 
     def test_legacy_keys_with_canonical(self):
         """Should prefer canonical keys over legacy."""
-        meta = {"added": "2023-01-01", "created": "2023-01-02", "updated": "2023-01-03", "modified": "2023-01-04"}
+        meta = {
+            "added": "2023-01-01",
+            "created": "2023-01-02",
+            "updated": "2023-01-03",
+            "modified": "2023-01-04",
+        }
         result = _normalize_meta(meta)
         assert result["created"] == "2023-01-02"
         assert result["modified"] == "2023-01-04"
@@ -266,9 +277,10 @@ class TestAtomicWrite:
         fpath = tmp_path / "x.bm"
         atomic_write(fpath, "v1")
         import bm.io as io_mod
-        real_replace = io_mod.os.replace
+
         def boom(src, dst):
             raise OSError("simulated")
+
         monkeypatch.setattr(io_mod.os, "replace", boom)
         with pytest.raises(OSError):
             atomic_write(fpath, "v2")

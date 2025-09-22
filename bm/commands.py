@@ -1,34 +1,34 @@
 """Command implementations for the bookmark manager."""
 
-import os
-import sys
+import html
 import json
+import os
+import re
 import shutil
 import subprocess
+import sys
 import textwrap
 import webbrowser
-import re
-import html
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.parse import urlparse
-from typing import List, Dict, Any, Tuple, Optional, Generator
 
+from .io import atomic_write, build_text, load_entry, parse_front_matter
 from .models import DEFAULT_STORE, FILE_EXT
 from .utils import (
-    die,
-    iso_now,
-    parse_iso,
-    to_epoch,
-    normalize_slug,
-    _reject_unsafe,
-    is_relative_to,
-    id_to_path,
-    create_slug_from_url,
-    rid,
     _launch_editor,
+    _reject_unsafe,
+    create_slug_from_url,
+    die,
+    id_to_path,
+    is_relative_to,
+    iso_now,
+    normalize_slug,
+    parse_iso,
+    rid,
+    to_epoch,
 )
-from .io import load_entry, atomic_write, build_text, parse_front_matter
 
 
 def cmd_init(args) -> None:
@@ -163,51 +163,65 @@ def _iter_entries(store: Path) -> Generator[Tuple[Path, Path, Dict[str, Any], st
         yield p, rel, meta, body
 
 
-def cmd_list(args) -> None:
-    """List bookmarks."""
-    store = Path(args.store or DEFAULT_STORE)
-    if not store.exists():
-        die(f"store not found: {store}")
+def _matches_tag(rel, meta, tag):
+    if not tag:
+        return True
+    segs = set(rel.parts[:-1])
+    header_tags = set(meta.get("tags", []))
+    return tag in segs or tag in header_tags
+
+
+def _matches_host(meta, want_host):
+    if not want_host:
+        return True
+    host = urlparse(meta.get("url", "")).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    hq = want_host[4:] if want_host.startswith("www.") else want_host
+    return host == hq
+
+
+def _matches_since(meta, since_dt):
+    if not since_dt:
+        return True
+    ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+    return ts and ts >= since_dt
+
+
+def _build_row(rel, meta, ts):
+    url = meta.get("url", "")
+    return {
+        "id": rid(url),
+        "path": str(rel),
+        "title": meta.get("title", ""),
+        "url": url,
+        "tags": meta.get("tags", []),
+        "created": meta.get("created", ""),
+        "modified": meta.get("modified", ""),
+        "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
+    }
+
+
+def _collect_rows(store: Path, args) -> List[dict]:
     rows = []
     since_dt = parse_iso(args.since) if args.since else None
     want_host = (args.host or "").lower()
     for _, rel, meta, _ in _iter_entries(store):
-        # tag filter (folder or header tag)
-        if args.tag:
-            segs = set(rel.parts[:-1])
-            header_tags = set(meta.get("tags", []))
-            if args.tag not in segs and args.tag not in header_tags:
-                continue
-        # host filter (case-insensitive)
-        if want_host:
-            host = urlparse(meta.get("url", "")).netloc.lower()
-            if host.startswith("www."):
-                host = host[4:]
-            hq = want_host[4:] if want_host.startswith("www.") else want_host
-            if host != hq:
-                continue
-        # since filter (created or modified)
-        ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-        if since_dt and (not ts or ts < since_dt):
+        if not _matches_tag(rel, meta, args.tag):
             continue
-        url = meta.get("url", "")
-        rows.append(
-            {
-                "id": rid(url),
-                "path": str(rel),
-                "title": meta.get("title", ""),
-                "url": url,
-                "tags": meta.get("tags", []),
-                "created": meta.get("created", ""),
-                "modified": meta.get("modified", ""),
-                "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
-            }
-        )
-    # newest first
+        if not _matches_host(meta, want_host):
+            continue
+        ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+        if not _matches_since(meta, since_dt):
+            continue
+        rows.append(_build_row(rel, meta, ts))
     rows.sort(key=lambda r: r["_sort"], reverse=True)
     for r in rows:
         r.pop("_sort", None)
+    return rows
 
+
+def _output_rows(rows: List[dict], args):
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
     elif args.jsonl:
@@ -218,6 +232,15 @@ def cmd_list(args) -> None:
             t = f" — {r['title']}" if r["title"] else ""
             u = f" <{r['url']}>" if r["url"] else ""
             print(f"{r['id']}  {r['path']}{t}{u}")
+
+
+def cmd_list(args) -> None:
+    """List bookmarks."""
+    store = Path(args.store or DEFAULT_STORE)
+    if not store.exists():
+        die(f"store not found: {store}")
+    rows = _collect_rows(store, args)
+    _output_rows(rows, args)
 
 
 def cmd_search(args) -> None:
@@ -470,4 +493,3 @@ def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
     # Fallback to path/fuzzy
     hits = find_candidates(store, token)
     return hits[0] if hits else None
-

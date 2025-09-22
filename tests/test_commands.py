@@ -1,8 +1,27 @@
 """Unit tests for bm.commands module."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from bm.commands import cmd_init, cmd_add, resolve_id_or_path, find_candidates, cmd_list, cmd_search, cmd_import, cmd_export, cmd_open, cmd_show, cmd_edit, cmd_rm, cmd_mv, cmd_tags, cmd_tag, cmd_sync
+
+from bm.commands import (
+    cmd_add,
+    cmd_edit,
+    cmd_export,
+    cmd_import,
+    cmd_init,
+    cmd_list,
+    cmd_mv,
+    cmd_open,
+    cmd_rm,
+    cmd_search,
+    cmd_show,
+    cmd_sync,
+    cmd_tag,
+    cmd_tags,
+    find_candidates,
+    resolve_id_or_path,
+)
 from bm.io import load_entry
 
 
@@ -30,7 +49,7 @@ class TestCmdInit:
         args.store = str(store)
         args.git = True
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             cmd_init(args)
 
         mock_run.assert_called_once_with(["git", "init"], cwd=store)
@@ -42,7 +61,7 @@ class TestCmdInit:
         args.store = str(store)
         args.git = False
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             cmd_init(args)
 
         mock_run.assert_not_called()
@@ -50,7 +69,7 @@ class TestCmdInit:
     def test_init_uses_default_store_when_none(self, tmp_path, monkeypatch):
         """Should use DEFAULT_STORE when --store is None."""
         fake_store = tmp_path / "default_store"
-        monkeypatch.setattr('bm.commands.DEFAULT_STORE', fake_store)
+        monkeypatch.setattr("bm.commands.DEFAULT_STORE", fake_store)
 
         args = MagicMock()
         args.store = None  # No --store provided
@@ -80,7 +99,7 @@ class TestCmdAdd:
         args.force = False
         args.edit = False
 
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             cmd_add(args)
 
         # Should create file
@@ -107,16 +126,16 @@ class TestCmdAdd:
         args.force = False
         args.edit = False
 
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             cmd_add(args)
 
         # Second add without force should fail
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             with pytest.raises(SystemExit):
                 cmd_add(args)
 
         args.force = True
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             cmd_add(args)  # Should succeed
 
 
@@ -136,6 +155,7 @@ url: https://example.com
         fpath.write_text(content)
 
         from bm.utils import rid
+
         bookmark_id = rid("https://example.com")
 
         result = resolve_id_or_path(store, bookmark_id)
@@ -179,6 +199,7 @@ url: https://different.com/page1-suffix
         fpath2.write_text(content2)
 
         from bm.utils import rid
+
         # Use ID of first bookmark
         bookmark_id = rid("https://example.com/page1")
         result = resolve_id_or_path(store, bookmark_id)
@@ -374,6 +395,7 @@ created: 2023-01-15T10:00:00Z
     def test_list_json_returns_array(self, tmp_path, capsys):
         """Should return single JSON array for --json."""
         import json
+
         store = tmp_path / "store"
         store.mkdir()
         # Create test bookmarks
@@ -419,6 +441,7 @@ created: 2023-01-16T10:00:00Z
     def test_list_jsonl_emits_objects_per_line(self, tmp_path, capsys):
         """Should emit one JSON object per line for --jsonl."""
         import json
+
         store = tmp_path / "store"
         store.mkdir()
         # Create test bookmarks
@@ -450,7 +473,7 @@ created: 2023-01-16T10:00:00Z
 
         cmd_list(args)
         captured = capsys.readouterr()
-        output_lines = captured.out.strip().split('\n')
+        output_lines = captured.out.strip().split("\n")
 
         # Should have 2 lines
         assert len(output_lines) == 2
@@ -518,6 +541,7 @@ tags: [python]
     def test_search_json_returns_array(self, tmp_path, capsys):
         """Should return single JSON array for --json."""
         import json
+
         store = tmp_path / "store"
         store.mkdir()
         # Create test bookmarks
@@ -561,6 +585,7 @@ created: 2023-01-16T10:00:00Z
     def test_search_jsonl_emits_objects_per_line(self, tmp_path, capsys):
         """Should emit one JSON object per line for --jsonl."""
         import json
+
         store = tmp_path / "store"
         store.mkdir()
         # Create test bookmarks
@@ -590,7 +615,7 @@ created: 2023-01-16T10:00:00Z
 
         cmd_search(args)
         captured = capsys.readouterr()
-        output_lines = captured.out.strip().split('\n')
+        output_lines = captured.out.strip().split("\n")
 
         # Should have 2 lines
         assert len(output_lines) == 2
@@ -613,12 +638,12 @@ class TestCmdImport:
         store.mkdir()
 
         # Create a Netscape bookmark file
-        netscape_content = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://example.com" TAGS="tag1,tag2">Example Title</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -648,13 +673,14 @@ class TestCmdImport:
 
         # Create Netscape with ADD_DATE
         import time
+
         timestamp = int(time.time())
-        netscape_content = f'''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = f"""<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://example.com" ADD_DATE="{timestamp}">Test</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -682,6 +708,7 @@ class TestCmdImport:
 
         # Create existing bookmark with the correct slug
         from bm.utils import create_slug_from_url
+
         slug = create_slug_from_url("https://existing.com")
         existing_content = """---
 url: https://existing.com
@@ -692,12 +719,12 @@ title: Existing
         existing_fpath.write_text(existing_content)
 
         # Try to import bookmark with same URL
-        netscape_content = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://existing.com">New Title</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -721,6 +748,7 @@ title: Existing
 
         # Create existing bookmark with the correct slug
         from bm.utils import create_slug_from_url
+
         slug = create_slug_from_url("https://existing.com")
         existing_content = """---
 url: https://existing.com
@@ -731,12 +759,12 @@ title: Existing
         existing_fpath.write_text(existing_content)
 
         # Import bookmark with same URL
-        netscape_content = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://existing.com">New Title</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -759,12 +787,12 @@ title: Existing
         store.mkdir()
 
         # Create Netscape with problematic TAGS
-        netscape_content = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://example.com" TAGS="a, ,b,  c  ,">Title</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -791,12 +819,12 @@ title: Existing
         store.mkdir()
 
         # Create Netscape with HTML entities in title
-        netscape_content = '''<!DOCTYPE NETSCAPE-Bookmark-file-1>
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
 <DT><A HREF="https://example.com">&lt;Bold&gt; &amp; &quot;Quoted&quot;</A>
-</DL><p>'''
+</DL><p>"""
 
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
@@ -848,11 +876,12 @@ created: 2023-01-15T10:00:00Z
 
         assert 'HREF="https://example.com"' in captured.out
         assert 'TAGS="tag1,tag2"' in captured.out
-        assert '>Example Title</A>' in captured.out
+        assert ">Example Title</A>" in captured.out
 
     def test_export_json_schema_and_ordering(self, tmp_path, capsys):
         """Should export valid JSON with correct schema and ordering."""
         import json
+
         store = tmp_path / "store"
         store.mkdir()
 
@@ -929,7 +958,7 @@ title: Test
         args.store = str(store)
         args.id = "test"
 
-        with patch('webbrowser.open', return_value=True) as mock_open:
+        with patch("webbrowser.open", return_value=True) as mock_open:
             cmd_open(args)
 
         mock_open.assert_called_once_with("https://example.com")
@@ -972,7 +1001,7 @@ title: Test
         args.store = str(store)
         args.id = "test"
 
-        with patch('webbrowser.open', return_value=False) as mock_open:
+        with patch("webbrowser.open", return_value=False) as mock_open:
             cmd_open(args)
 
         mock_open.assert_called_once_with("https://example.com")
@@ -1099,10 +1128,10 @@ modified: {old_modified}
         args.id = "test"
 
         # Mock the editor to do nothing
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             # Mock iso_now to return a specific timestamp
             new_modified = "2023-01-16T11:00:00+00:00"
-            with patch('bm.commands.iso_now', return_value=new_modified):
+            with patch("bm.commands.iso_now", return_value=new_modified):
                 cmd_edit(args)
 
         # Check that modified was updated
@@ -1128,10 +1157,10 @@ title: Test
         args.id = "test"
 
         # Mock the editor to do nothing
-        with patch('bm.commands._launch_editor'):
+        with patch("bm.commands._launch_editor"):
             # Mock iso_now to return a specific timestamp
             new_modified = "2023-01-16T11:00:00+00:00"
-            with patch('bm.commands.iso_now', return_value=new_modified):
+            with patch("bm.commands.iso_now", return_value=new_modified):
                 cmd_edit(args)
 
         # Check that modified was added
@@ -1345,7 +1374,7 @@ tags: [documentation, web]
 
         cmd_tags(args)
         captured = capsys.readouterr()
-        output_lines = captured.out.strip().split('\n')
+        output_lines = captured.out.strip().split("\n")
 
         # Should include folder tags: web, python, docs
         # Header tags: python, tutorial, web, documentation, web
@@ -1372,7 +1401,7 @@ tags: [zebra, alpha, zebra]
 
         cmd_tags(args)
         captured = capsys.readouterr()
-        output_lines = captured.out.strip().split('\n')
+        output_lines = captured.out.strip().split("\n")
 
         # Should be sorted and deduped: alpha, zebra
         expected_tags = ["alpha", "zebra"]
@@ -1404,7 +1433,7 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             # Mock successful upstream check (return code 1 means no upstream)
             mock_run.return_value.returncode = 1
             cmd_sync(args)
@@ -1414,7 +1443,13 @@ class TestCmdSync:
         assert len(calls) == 3  # add, commit, rev-parse
         assert calls[0][0][0] == ["git", "add", "-A"]
         assert calls[1][0][0] == ["git", "commit", "-m", "bm sync", "--allow-empty"]
-        assert calls[2][0][0] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+        assert calls[2][0][0] == [
+            "git",
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{u}",
+        ]
 
     def test_sync_pushes_when_upstream_exists(self, tmp_path):
         """Should push when upstream exists."""
@@ -1425,12 +1460,13 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             # Mock successful upstream check (return code 0 means upstream exists)
             def mock_return(*args, **kwargs):
                 if args[0] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
                     return MagicMock(returncode=0)
                 return MagicMock(returncode=0)
+
             mock_run.side_effect = mock_return
             cmd_sync(args)
 
@@ -1448,12 +1484,13 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             # Mock failed upstream check (return code 1 means no upstream)
             def mock_return(*args, **kwargs):
                 if args[0] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
                     return MagicMock(returncode=1)
                 return MagicMock(returncode=0)
+
             mock_run.side_effect = mock_return
             cmd_sync(args)
 
@@ -1539,7 +1576,7 @@ modified: {old_modified}
 
         # Mock iso_now
         new_modified = "2023-01-16T11:00:00+00:00"
-        with patch('bm.commands.iso_now', return_value=new_modified):
+        with patch("bm.commands.iso_now", return_value=new_modified):
             cmd_tag(args)
 
         # Check that modified was updated

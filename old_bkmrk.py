@@ -11,16 +11,16 @@
 # - atomic writes; path safety checks; better $EDITOR handling
 
 import argparse
+import hashlib
+import json
 import os
-import sys
-import textwrap
+import re
+import shlex
 import shutil
 import subprocess
+import sys
+import textwrap
 import webbrowser
-import json
-import re
-import hashlib
-import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -151,6 +151,60 @@ def _normalize_meta(meta: dict) -> dict:
     return m
 
 
+def _parse_tags(v: str):
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        if inner:
+            parts = []
+            buf, inq = "", False
+            for ch in inner:
+                if ch in "\"'":
+                    inq = not inq
+                    continue
+                if ch == "," and not inq:
+                    if buf.strip():
+                        parts.append(buf.strip())
+                    buf = ""
+                else:
+                    buf += ch
+            if buf.strip():
+                parts.append(buf.strip())
+            return [t.strip() for t in parts if t.strip()]
+        else:
+            return []
+    else:
+        return [t.strip() for t in v.split(",") if t.strip()]
+
+
+def _parse_no_front_matter(text: str):
+    lines = text.splitlines()
+    meta = {}
+    body = text
+    if lines:
+        maybe_url = lines[0].strip()
+        if maybe_url.startswith("http://") or maybe_url.startswith("https://"):
+            meta["url"] = maybe_url
+            body = "\n".join(lines[1:]).lstrip("\n")
+    return _normalize_meta(meta), body
+
+
+def _parse_header(header: str):
+    meta = {}
+    for raw in header.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):  # allow comments
+            continue
+        if ":" in line:
+            k, v = line.split(":", 1)
+            k = k.strip().lower()
+            v = v.strip()
+            if k == "tags":
+                meta["tags"] = _parse_tags(v)
+            else:
+                meta[k] = v
+    return meta
+
+
 def parse_front_matter(text: str):
     """
     Simple front matter parser:
@@ -164,16 +218,7 @@ def parse_front_matter(text: str):
       - added/updated (legacy) -> normalized to created/modified
     """
     if not text.startswith(FM_START):
-        # No front matter; infer URL from first line as best-effort
-        lines = text.splitlines()
-        meta = {}
-        body = text
-        if lines:
-            maybe_url = lines[0].strip()
-            if maybe_url.startswith("http://") or maybe_url.startswith("https://"):
-                meta["url"] = maybe_url
-                body = "\n".join(lines[1:]).lstrip("\n")
-        return _normalize_meta(meta), body
+        return _parse_no_front_matter(text)
 
     rest = text[len(FM_START) :]
     end_idx = rest.find(FM_END)
@@ -182,40 +227,7 @@ def parse_front_matter(text: str):
 
     header = rest[:end_idx]
     body = rest[end_idx + len(FM_END) :]
-    meta = {}
-    for raw in header.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):  # allow comments
-            continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            k = k.strip().lower()
-            v = v.strip()
-            if k == "tags":
-                if v.startswith("[") and v.endswith("]"):
-                    inner = v[1:-1].strip()
-                    if inner:
-                        parts = []
-                        buf, inq = "", False
-                        for ch in inner:
-                            if ch in "\"'":
-                                inq = not inq
-                                continue
-                            if ch == "," and not inq:
-                                if buf.strip():
-                                    parts.append(buf.strip())
-                                buf = ""
-                            else:
-                                buf += ch
-                        if buf.strip():
-                            parts.append(buf.strip())
-                        meta["tags"] = [t.strip() for t in parts if t.strip()]
-                    else:
-                        meta["tags"] = []
-                else:
-                    meta["tags"] = [t.strip() for t in v.split(",") if t.strip()]
-            else:
-                meta[k] = v
+    meta = _parse_header(header)
     return _normalize_meta(meta), body.lstrip("\n")
 
 
@@ -368,9 +380,7 @@ def cmd_add(args):
         else:
             cmd = ["notepad", str(tmp)] if os.name == "nt" else ["vi", str(tmp)]
         subprocess.call(cmd, shell=False)
-        meta2, body2 = parse_front_matter(
-            tmp.read_text(encoding="utf-8", errors="replace")
-        )
+        meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
         try:
             tmp.unlink()
         except Exception:
@@ -413,9 +423,7 @@ def cmd_open(args):
     ok = webbrowser.open(url)
     print(url)
     if not ok:
-        print(
-            "bm: warning: system did not acknowledge opening browser", file=sys.stderr
-        )
+        print("bm: warning: system did not acknowledge opening browser", file=sys.stderr)
 
 
 def _iter_entries(store: Path):
@@ -425,50 +433,65 @@ def _iter_entries(store: Path):
         yield p, rel, meta, body
 
 
-def cmd_list(args):
-    store = Path(args.store or DEFAULT_STORE)
-    if not store.exists():
-        die(f"store not found: {store}")
+def _matches_tag(rel, meta, tag):
+    if not tag:
+        return True
+    segs = set(rel.parts[:-1])
+    header_tags = set(meta.get("tags", []))
+    return tag in segs or tag in header_tags
+
+
+def _matches_host(meta, want_host):
+    if not want_host:
+        return True
+    host = urlparse(meta.get("url", "")).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    hq = want_host[4:] if want_host.startswith("www.") else want_host
+    return host == hq
+
+
+def _matches_since(meta, since_dt):
+    if not since_dt:
+        return True
+    ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+    return ts and ts >= since_dt
+
+
+def _build_row(rel, meta, ts):
+    url = meta.get("url", "")
+    return {
+        "id": rid(url),
+        "path": str(rel),
+        "title": meta.get("title", ""),
+        "url": url,
+        "tags": meta.get("tags", []),
+        "created": meta.get("created", ""),
+        "modified": meta.get("modified", ""),
+        "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
+    }
+
+
+def _collect_rows(store, args):
     rows = []
     since_dt = parse_iso(args.since) if args.since else None
     want_host = (args.host or "").lower()
     for _, rel, meta, _ in _iter_entries(store):
-        # tag filter (folder or header tag)
-        if args.tag:
-            segs = set(rel.parts[:-1])
-            header_tags = set(meta.get("tags", []))
-            if args.tag not in segs and args.tag not in header_tags:
-                continue
-        # host filter (case-insensitive)
-        if want_host:
-            host = urlparse(meta.get("url", "")).netloc.lower()
-            if host.startswith("www."):
-                host = host[4:]
-            hq = want_host[4:] if want_host.startswith("www.") else want_host
-            if host != hq:
-                continue
-        # since filter (created or modified)
-        ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-        if since_dt and (not ts or ts < since_dt):
+        if not _matches_tag(rel, meta, args.tag):
             continue
-        url = meta.get("url", "")
-        rows.append(
-            {
-                "id": rid(url),
-                "path": str(rel),
-                "title": meta.get("title", ""),
-                "url": url,
-                "tags": meta.get("tags", []),
-                "created": meta.get("created", ""),
-                "modified": meta.get("modified", ""),
-                "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
-            }
-        )
-    # newest first
+        if not _matches_host(meta, want_host):
+            continue
+        ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+        if not _matches_since(meta, since_dt):
+            continue
+        rows.append(_build_row(rel, meta, ts))
     rows.sort(key=lambda r: r["_sort"], reverse=True)
     for r in rows:
         r.pop("_sort", None)
+    return rows
 
+
+def _output_rows(rows, args):
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
     elif args.jsonl:
@@ -479,6 +502,14 @@ def cmd_list(args):
             t = f" — {r['title']}" if r["title"] else ""
             u = f" <{r['url']}>" if r["url"] else ""
             print(f"{r['id']}  {r['path']}{t}{u}")
+
+
+def cmd_list(args):
+    store = Path(args.store or DEFAULT_STORE)
+    if not store.exists():
+        die(f"store not found: {store}")
+    rows = _collect_rows(store, args)
+    _output_rows(rows, args)
 
 
 def cmd_search(args):
@@ -637,9 +668,7 @@ def cmd_export(args):
                 .replace(">", "&gt;")
             )
             url = (meta.get("url") or "").replace("&", "&amp;").replace('"', "&quot;")
-            out.append(
-                f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n'
-            )
+            out.append(f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n')
         out.append(NETSCAPE_FOOTER)
         sys.stdout.write("".join(out))
     elif args.fmt == "json":
@@ -666,9 +695,7 @@ def cmd_import(args):
     if args.fmt == "netscape":
         text = Path(args.file).read_text(encoding="utf-8", errors="replace")
         # crude regex parse for <A ... HREF="...">title</A>
-        for m in re.finditer(
-            r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S
-        ):
+        for m in re.finditer(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S):
             url, title_html = m.group(1), m.group(2)
             title = re.sub("<[^>]+>", "", title_html)
             tagm = re.search(r'TAGS="([^"]+)"', m.group(0))
@@ -713,9 +740,7 @@ def cmd_sync(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        prog="bm", description="Plain-text, pass-style bookmarks"
-    )
+    ap = argparse.ArgumentParser(prog="bm", description="Plain-text, pass-style bookmarks")
     ap.add_argument(
         "--store",
         help="Path to bookmark store (default: $BOOKMARKS_DIR or ~/.bookmarks.d)",
@@ -723,9 +748,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     p = sp.add_parser("init", help="Create a new store")
-    p.add_argument(
-        "--git", action="store_true", help="Initialize a git repo in the store"
-    )
+    p.add_argument("--git", action="store_true", help="Initialize a git repo in the store")
     p.set_defaults(func=cmd_init)
 
     p = sp.add_parser("add", help="Add a bookmark")
@@ -735,9 +758,7 @@ def main():
     p.add_argument("-d", "--description", help="Notes / description")
     p.add_argument("-p", "--path", help="Folder path like dev/python")
     p.add_argument("--id", help="Explicit id/slug (relative path ok)")
-    p.add_argument(
-        "--edit", action="store_true", help="Open $EDITOR with a prefilled template"
-    )
+    p.add_argument("--edit", action="store_true", help="Open $EDITOR with a prefilled template")
     p.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
     p.set_defaults(func=cmd_add)
 

@@ -1,9 +1,9 @@
 """Data models and constants for the bookmark manager."""
 
-from pathlib import Path
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 DEFAULT_STORE = Path(os.environ.get("BOOKMARKS_DIR", str(Path.home() / ".bookmarks.d")))
 FILE_EXT = ".bm"

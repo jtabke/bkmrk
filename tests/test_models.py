@@ -1,8 +1,9 @@
 """Unit tests for bm.models module."""
 
 import pytest
-from bm.models import Bookmark
+
 from bm.io import build_text, parse_front_matter
+from bm.models import Bookmark
 
 
 class TestBookmark:
@@ -26,7 +27,7 @@ class TestBookmark:
             tags=["tag1", "tag2"],
             created="2023-01-01",
             modified="2023-01-02",
-            notes="Some notes"
+            notes="Some notes",
         )
         meta = bm.to_meta()
         expected = {
@@ -35,7 +36,7 @@ class TestBookmark:
             "tags": ["tag1", "tag2"],
             "created": "2023-01-01",
             "modified": "2023-01-02",
-            "notes": "Some notes"
+            "notes": "Some notes",
         }
         assert meta == expected
 
@@ -45,10 +46,16 @@ class TestBookmark:
         meta = bm.to_meta()
         assert meta == {"url": "https://example.com"}
 
-    @pytest.mark.parametrize("kwargs,expected", [
-        (dict(url="https://e", title="", tags=[]), {"url":"https://e"}),
-        (dict(url="https://e", title="T", tags=["x"]), {"url":"https://e","title":"T","tags":["x"]}),
-    ])
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            (dict(url="https://e", title="", tags=[]), {"url": "https://e"}),
+            (
+                dict(url="https://e", title="T", tags=["x"]),
+                {"url": "https://e", "title": "T", "tags": ["x"]},
+            ),
+        ],
+    )
     def test_to_meta_filter_matrix(self, kwargs, expected):
         """Should filter empty values in various combinations."""
         bm = Bookmark(**kwargs)

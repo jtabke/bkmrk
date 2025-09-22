@@ -1,18 +1,20 @@
 """Unit tests for bm.utils module."""
 
 import re
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
+
 from bm.utils import (
-    iso_now,
-    parse_iso,
-    to_epoch,
-    normalize_slug,
     _reject_unsafe,
-    is_relative_to,
-    id_to_path,
     create_slug_from_url,
+    id_to_path,
+    is_relative_to,
+    iso_now,
+    normalize_slug,
+    parse_iso,
     rid,
+    to_epoch,
 )
 
 
@@ -251,4 +253,3 @@ class TestRid:
         h = rid("https://example.com")
         assert len(h) == 12
         assert re.fullmatch(r"[0-9a-f]{12}", h)
-

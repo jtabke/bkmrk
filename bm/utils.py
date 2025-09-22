@@ -1,15 +1,15 @@
 """Utility functions for the bookmark manager."""
 
-import os
-import sys
-import re
 import hashlib
+import os
+import re
 import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Optional
+from urllib.parse import urlparse
 
 from .models import FILE_EXT
 
@@ -133,4 +133,3 @@ def _launch_editor(path: Path) -> None:
     else:
         cmd = ["notepad", str(path)] if os.name == "nt" else ["vi", str(path)]
     subprocess.call(cmd, shell=False)
-
