@@ -20,7 +20,8 @@ dependencies = []
 dev = [
     "pytest>=7.0",
     "pytest-cov",
-    "ruff"
+    "ruff",
+    "pre-commit"
 ]
 
 [project.scripts]
@@ -34,7 +35,7 @@ line-length = 100
 target-version = "py38"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "C90"]
+select = ["E", "F", "W", "C90", "I"]
 ignore = ["E501"]  # line too long, handled by formatter
 
 [tool.ruff.format]
