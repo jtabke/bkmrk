@@ -2,10 +2,8 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 from bm.commands import cmd_init, cmd_add, resolve_id_or_path, find_candidates, cmd_list, cmd_search, cmd_import, cmd_export, cmd_open, cmd_show, cmd_edit, cmd_rm, cmd_mv, cmd_tags, cmd_tag, cmd_sync
 from bm.io import load_entry
-from bm.utils import iso_now
 
 
 class TestCmdInit:
