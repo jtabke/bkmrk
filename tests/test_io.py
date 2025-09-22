@@ -18,6 +18,30 @@ class TestNormalizeMeta:
         assert "added" not in result
         assert "updated" not in result
 
+    def test_legacy_keys_only_added(self):
+        """Should map only added to created."""
+        meta = {"added": "2023-01-01"}
+        result = _normalize_meta(meta)
+        assert result["created"] == "2023-01-01"
+        assert "added" not in result
+
+    def test_legacy_keys_only_updated(self):
+        """Should map only updated to modified."""
+        meta = {"updated": "2023-01-02"}
+        result = _normalize_meta(meta)
+        assert result["modified"] == "2023-01-02"
+        assert "updated" not in result
+
+    def test_legacy_keys_with_canonical(self):
+        """Should prefer canonical keys over legacy."""
+        meta = {"added": "2023-01-01", "created": "2023-01-02", "updated": "2023-01-03", "modified": "2023-01-04"}
+        result = _normalize_meta(meta)
+        assert result["created"] == "2023-01-02"
+        assert result["modified"] == "2023-01-04"
+        # Legacy keys should still be present if canonical exists
+        assert "added" in result
+        assert "updated" in result
+
     def test_tags_string(self):
         """Should convert tags string to list."""
         meta = {"tags": "tag1, tag2"}
@@ -27,6 +51,24 @@ class TestNormalizeMeta:
     def test_tags_missing(self):
         """Should add empty tags list if missing."""
         meta = {}
+        result = _normalize_meta(meta)
+        assert result["tags"] == []
+
+    def test_tags_list_already_normalized(self):
+        """Should leave tags list unchanged if already a list."""
+        meta = {"tags": ["tag1", "tag2", "tag3"]}
+        result = _normalize_meta(meta)
+        assert result["tags"] == ["tag1", "tag2", "tag3"]
+
+    def test_tags_comma_string_with_spaces(self):
+        """Should split comma string with spaces."""
+        meta = {"tags": "tag1, tag2 , tag3"}
+        result = _normalize_meta(meta)
+        assert result["tags"] == ["tag1", "tag2", "tag3"]
+
+    def test_tags_empty_string(self):
+        """Should convert empty tags string to empty list."""
+        meta = {"tags": ""}
         result = _normalize_meta(meta)
         assert result["tags"] == []
 
@@ -74,6 +116,60 @@ url: https://example.com
 """
         meta, body = parse_front_matter(text)
         assert meta["url"] == "https://example.com"
+
+    def test_body_with_trailing_newline(self):
+        """Should preserve trailing newline in body."""
+        text = """---
+url: https://example.com
+---
+Body text
+"""
+        meta, body = parse_front_matter(text)
+        assert body == "Body text\n"
+
+    def test_body_without_trailing_newline(self):
+        """Should handle body without trailing newline."""
+        text = """---
+url: https://example.com
+---
+Body text"""
+        meta, body = parse_front_matter(text)
+        assert body == "Body text"
+
+    def test_missing_end_marker(self):
+        """Should handle missing --- end marker by returning empty meta."""
+        text = """---
+url: https://example.com
+title: Test
+Body text"""
+        meta, body = parse_front_matter(text)
+        assert meta == {"tags": []}
+        assert body == text
+
+    def test_multiline_scalar_build(self):
+        """Should build multiline scalars correctly."""
+        meta = {"notes": "line1\nline2\nline3"}
+        body = "body text"
+        text = build_text(meta, body)
+        # Check that it contains the multiline format
+        assert "notes: |\n  line1\n  line2\n  line3" in text
+        assert body in text
+
+    def test_tags_with_quotes_and_commas(self):
+        """Should handle tags with quotes and commas."""
+        text = """---
+tags: ["tag,with,comma", normal]
+---
+"""
+        meta, body = parse_front_matter(text)
+        assert meta["tags"] == ["tag,with,comma", "normal"]
+
+    def test_no_front_matter_first_line_not_url(self):
+        """Should handle no front matter with first line not being URL."""
+        text = "This is not a URL\nThis is body text"
+        meta, body = parse_front_matter(text)
+        assert meta == {"tags": []}
+        assert body == text
 
 
 class TestFmtTag:

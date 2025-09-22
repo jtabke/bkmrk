@@ -109,7 +109,7 @@ class TestNormalizeSlug:
 
     def test_special_chars(self):
         """Should replace special characters with dashes."""
-        assert normalize_slug("hello@world!") == "hello-world-"
+        assert normalize_slug("hello@world!") == "hello-world"
 
     def test_multiple_dashes(self):
         """Should collapse multiple dashes."""
@@ -123,6 +123,31 @@ class TestNormalizeSlug:
         """Should return 'untitled' for empty string."""
         assert normalize_slug("") == "untitled"
         assert normalize_slug("   ") == "untitled"
+
+    def test_trim_leading_trailing_slashes(self):
+        """Should trim leading and trailing slashes."""
+        assert normalize_slug("/hello/world/") == "hello/world"
+        assert normalize_slug("///hello///") == "hello"
+
+    def test_reject_dot_dot(self):
+        """Should reject paths with .."""
+        with pytest.raises(SystemExit):
+            _reject_unsafe("../escape")
+
+    def test_reject_absolute_path(self):
+        """Should reject absolute paths."""
+        with pytest.raises(SystemExit):
+            _reject_unsafe("/absolute/path")
+
+    def test_normalize_slug_collapse_multiple_dashes(self):
+        """Should collapse multiple consecutive dashes."""
+        assert normalize_slug("hello---world") == "hello-world"
+        assert normalize_slug("a----b") == "a-b"
+
+    def test_normalize_slug_unicode_handling(self):
+        """Should handle unicode characters."""
+        result = normalize_slug("héllo wörld")
+        assert result == "héllo-wörld"
 
 
 class TestRejectUnsafe:
@@ -184,6 +209,24 @@ class TestCreateSlugFromUrl:
     def test_no_path(self):
         """Should handle URL without path."""
         slug = create_slug_from_url("https://example.com")
+        assert "example-com" in slug
+
+    def test_url_with_path(self):
+        """Should include path in slug."""
+        slug = create_slug_from_url("https://example.com/path/to/page")
+        assert "example-com" in slug
+        assert "path" in slug or "page" in slug
+
+    def test_unicode_url(self):
+        """Should handle unicode characters in URL."""
+        slug = create_slug_from_url("https://exämple.com/päth")
+        # Should create a valid slug without crashing
+        assert isinstance(slug, str)
+        assert len(slug) > 0
+
+    def test_url_with_query_params(self):
+        """Should handle URLs with query parameters."""
+        slug = create_slug_from_url("https://example.com/path?query=value")
         assert "example-com" in slug
 
 

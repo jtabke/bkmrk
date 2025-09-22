@@ -8,6 +8,7 @@ import subprocess
 import textwrap
 import webbrowser
 import re
+import html
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -404,7 +405,7 @@ def cmd_import(args) -> None:
         # crude regex parse for <A ... HREF="...">title</A>
         for m in re.finditer(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S):
             url, title_html = m.group(1), m.group(2)
-            title = re.sub("<[^>]+>", "", title_html)
+            title = html.unescape(re.sub("<[^>]+>", "", title_html))
             tagm = re.search(r'TAGS="([^"]+)"', m.group(0))
             tags = [t.strip() for t in tagm.group(1).split(",")] if tagm else []
             slug = create_slug_from_url(url)
@@ -452,7 +453,7 @@ def find_candidates(store: Path, needle: str) -> List[Path]:
     name = Path(needle).name  # compare against last component
     hits = []
     for p in store.rglob(f"*{FILE_EXT}"):
-        if p.stem.endswith(name):
+        if name in p.stem:
             hits.append(p)
     return sorted(hits)
 
