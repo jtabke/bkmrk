@@ -1,20 +1,28 @@
 """Command line interface for the bookmark manager."""
 
 import argparse
-from pathlib import Path
 
-from .models import DEFAULT_STORE
 from .commands import (
-    cmd_init, cmd_add, cmd_show, cmd_open, cmd_list, cmd_search,
-    cmd_edit, cmd_rm, cmd_mv, cmd_tags, cmd_tag, cmd_export, cmd_import, cmd_sync
+    cmd_init,
+    cmd_add,
+    cmd_show,
+    cmd_open,
+    cmd_list,
+    cmd_search,
+    cmd_edit,
+    cmd_rm,
+    cmd_mv,
+    cmd_tags,
+    cmd_tag,
+    cmd_export,
+    cmd_import,
+    cmd_sync,
 )
 
 
 def main() -> None:
     """Main entry point."""
-    ap = argparse.ArgumentParser(
-        prog="bm", description="Plain-text, pass-style bookmarks"
-    )
+    ap = argparse.ArgumentParser(prog="bm", description="Plain-text, pass-style bookmarks")
     ap.add_argument(
         "--store",
         help="Path to bookmark store (default: $BOOKMARKS_DIR or ~/.bookmarks.d)",
@@ -22,9 +30,7 @@ def main() -> None:
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     p = sp.add_parser("init", help="Create a new store")
-    p.add_argument(
-        "--git", action="store_true", help="Initialize a git repo in the store"
-    )
+    p.add_argument("--git", action="store_true", help="Initialize a git repo in the store")
     p.set_defaults(func=cmd_init)
 
     p = sp.add_parser("add", help="Add a bookmark")
@@ -34,9 +40,7 @@ def main() -> None:
     p.add_argument("-d", "--description", help="Notes / description")
     p.add_argument("-p", "--path", help="Folder path like dev/python")
     p.add_argument("--id", help="Explicit id/slug (relative path ok)")
-    p.add_argument(
-        "--edit", action="store_true", help="Open $EDITOR with a prefilled template"
-    )
+    p.add_argument("--edit", action="store_true", help="Open $EDITOR with a prefilled template")
     p.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
     p.set_defaults(func=cmd_add)
 
@@ -106,3 +110,4 @@ def main() -> None:
 
     args = ap.parse_args()
     args.func(args)
+

@@ -1,11 +1,10 @@
 """Input/Output functions for bookmarks."""
 
 import os
-import re
 from pathlib import Path
 from typing import Dict, Tuple, Any
 
-from .models import FM_START, FM_END, Bookmark
+from .models import FM_START, FM_END
 
 
 def _normalize_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,3 +131,4 @@ def atomic_write(path: Path, data: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(data, encoding="utf-8")
     os.replace(tmp, path)
+

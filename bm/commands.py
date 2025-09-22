@@ -13,8 +13,20 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import List, Dict, Any, Tuple, Optional, Generator
 
-from .models import DEFAULT_STORE, FILE_EXT, Bookmark
-from .utils import die, iso_now, parse_iso, to_epoch, normalize_slug, _reject_unsafe, is_relative_to, id_to_path, create_slug_from_url, rid, _launch_editor
+from .models import DEFAULT_STORE, FILE_EXT
+from .utils import (
+    die,
+    iso_now,
+    parse_iso,
+    to_epoch,
+    normalize_slug,
+    _reject_unsafe,
+    is_relative_to,
+    id_to_path,
+    create_slug_from_url,
+    rid,
+    _launch_editor,
+)
 from .io import load_entry, atomic_write, build_text, parse_front_matter
 
 
@@ -93,9 +105,7 @@ def cmd_add(args) -> None:
         )
         tmp.write_text(template, encoding="utf-8")
         _launch_editor(tmp)
-        meta2, body2 = parse_front_matter(
-            tmp.read_text(encoding="utf-8", errors="replace")
-        )
+        meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
         try:
             tmp.unlink()
         except Exception:
@@ -141,9 +151,7 @@ def cmd_open(args) -> None:
     ok = webbrowser.open(url)
     print(url)
     if not ok:
-        print(
-            "bm: warning: system did not acknowledge opening browser", file=sys.stderr
-        )
+        print("bm: warning: system did not acknowledge opening browser", file=sys.stderr)
 
 
 def _iter_entries(store: Path) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
@@ -366,9 +374,7 @@ def cmd_export(args) -> None:
                 .replace(">", "&gt;")
             )
             url = (meta.get("url") or "").replace("&", "&amp;").replace('"', "&quot;")
-            out.append(
-                f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n'
-            )
+            out.append(f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n')
         out.append(NETSCAPE_FOOTER)
         sys.stdout.write("".join(out))
     elif args.fmt == "json":
@@ -396,9 +402,7 @@ def cmd_import(args) -> None:
     if args.fmt == "netscape":
         text = Path(args.file).read_text(encoding="utf-8", errors="replace")
         # crude regex parse for <A ... HREF="...">title</A>
-        for m in re.finditer(
-            r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S
-        ):
+        for m in re.finditer(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S):
             url, title_html = m.group(1), m.group(2)
             title = re.sub("<[^>]+>", "", title_html)
             tagm = re.search(r'TAGS="([^"]+)"', m.group(0))
@@ -438,8 +442,6 @@ def cmd_sync(args) -> None:
         subprocess.run(["git", "push"], cwd=store)
 
 
-# Helper functions that were in the original
-
 def find_candidates(store: Path, needle: str) -> List[Path]:
     """Exact path or fuzzy by filename stem suffix."""
     needle = normalize_slug(needle)
@@ -447,11 +449,12 @@ def find_candidates(store: Path, needle: str) -> List[Path]:
     exact = id_to_path(store, needle)
     if exact.exists():
         return [exact]
+    name = Path(needle).name  # compare against last component
     hits = []
     for p in store.rglob(f"*{FILE_EXT}"):
-        if needle in p.stem:
+        if p.stem.endswith(name):
             hits.append(p)
-    return hits
+    return sorted(hits)
 
 
 def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
@@ -466,3 +469,4 @@ def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
     # Fallback to path/fuzzy
     hits = find_candidates(store, token)
     return hits[0] if hits else None
+

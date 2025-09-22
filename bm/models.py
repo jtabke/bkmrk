@@ -3,9 +3,9 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
-from datetime import datetime
+import os
 
-DEFAULT_STORE = Path.home() / ".bookmarks.d"
+DEFAULT_STORE = Path(os.environ.get("BOOKMARKS_DIR", str(Path.home() / ".bookmarks.d")))
 FILE_EXT = ".bm"
 FM_START = "---\n"
 FM_END = "---\n"
@@ -14,6 +14,7 @@ FM_END = "---\n"
 @dataclass
 class Bookmark:
     """Represents a bookmark entry."""
+
     url: str
     title: str = ""
     tags: List[str] = field(default_factory=list)

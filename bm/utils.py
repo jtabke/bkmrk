@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional
 
-from .models import DEFAULT_STORE, FILE_EXT
+from .models import FILE_EXT
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -72,7 +72,7 @@ def normalize_slug(s: str) -> str:
     s = s.lower().strip().strip("/").replace(" ", "-")
     s = re.sub(r"[^\w\-/\.]", "-", s)
     s = re.sub(r"-{2,}", "-", s)
-    return s or "untitled"
+    return s.strip("-") or "untitled"
 
 
 def _reject_unsafe(rel: str) -> str:
@@ -133,3 +133,4 @@ def _launch_editor(path: Path) -> None:
     else:
         cmd = ["notepad", str(path)] if os.name == "nt" else ["vi", str(path)]
     subprocess.call(cmd, shell=False)
+
