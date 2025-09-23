@@ -56,27 +56,33 @@ Most bookmark tools are databases or browser‑locked. `bm` chooses **text first
 
 ## Install
 
-Download `bm.py` somewhere on your `PATH` and make it executable:
+Install from source (requires Python >=3.8):
 
 ```bash
-curl -L -o ~/bin/bm.py https://example.com/bm.py
-chmod +x ~/bin/bm.py
+git clone https://github.com/jtabke/bkmrk
+cd bm
+pip install .
 ```
 
-Or run with Python explicitly:
+Or for development (editable install):
 
 ```bash
-python3 /path/to/bm.py --help
+pip install -e .
 ```
 
-Windows (PowerShell):
+This installs the `bm` command globally.
+
+Alternatively, run directly without installing:
+
+```bash
+python3 bm.py --help
+```
+
+On Windows (PowerShell):
 
 ```powershell
-curl.exe -L -o $env:USERPROFILE\bin\bm.py https://example.com/bm.py
-python %USERPROFILE%\bin\bm.py --help
+python bm.py --help
 ```
-
-> Optional: add an alias `bm` → `bm.py` in your shell profile.
 
 ---
 
