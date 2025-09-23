@@ -272,6 +272,28 @@ bm.py export netscape > ~/Desktop/bookmarks.html
 # Import that file in your browser’s bookmarks manager
 ```
 
+**Sync with Syncthing**
+
+For cross-device synchronization without Git, use [Syncthing](https://syncthing.net/) to sync your bookmark store:
+
+1. Install Syncthing on all devices.
+2. Add your bookmark store directory (`~/.bookmarks.d` or `$BOOKMARKS_DIR`) as a synced folder in Syncthing.
+3. Configure devices to share the folder bidirectionally.
+4. Syncthing will keep your bookmarks in sync across devices automatically.
+
+**Auto-export for browser import**
+
+To automatically export bookmarks to Netscape HTML for browser import:
+
+```bash
+#!/bin/bash
+# auto_export.sh
+bm.py export netscape > ~/bookmarks_auto.html
+echo "Bookmarks exported to ~/bookmarks_auto.html. Import this file in your browser."
+```
+
+Run this script periodically or on demand to generate an up-to-date bookmark file for browser import.
+
 ---
 
 ## Configuration
