@@ -467,32 +467,49 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        if line.startswith("<DT><H3>"):
-            # folder start
-            m = re.search(r"<DT><H3>(.*?)</H3>", line, re.I)
-            if m:
-                folder_name = html.unescape(m.group(1))
-                folder_stack.append(folder_name)
-        elif line.startswith("<DT><A"):
-            # bookmark
-            m = re.search(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', line, re.I)
-            if m:
-                url, title_html = m.group(1), m.group(2)
-                title = html.unescape(re.sub("<[^>]+>", "", title_html))
-                tagm = re.search(r'TAGS="([^"]*)"', line, re.I)
-                tags = [t.strip() for t in (tagm.group(1) if tagm else "").split(",") if t.strip()]
-                path = "/".join(folder_stack) if folder_stack else ""
-                meta = {
-                    "url": url,
-                    "title": title.strip(),
-                    "tags": tags,
-                    "created": iso_now(),
-                }
-                entries.append((path, meta))
-        elif line.startswith("</DL>"):
-            # folder end
+        # FOLDER START: <DT><H3 ...>Name</H3>
+        m = re.search(r"<DT>\s*<H3\b[^>]*>(.*?)</H3>", line, re.I)
+        if m:
+            folder_name = html.unescape(m.group(1))
+            folder_stack.append(folder_name)
+            i += 1
+            continue
+        # BOOKMARK: <DT><A ... HREF="...">Title</A>
+        m = re.search(r"<DT>\s*<A\b[^>]*HREF=\"([^\"]+)\"[^>]*>(.*?)</A>", line, re.I)
+        if m:
+            url, title_html = m.group(1), m.group(2)
+            title = html.unescape(re.sub("<[^>]+>", "", title_html))
+            tagm = re.search(r'\bTAGS="([^"]*)"', line, re.I)
+            tags = [t.strip() for t in (tagm.group(1) if tagm else "").split(",") if t.strip()]
+            path = "/".join(folder_stack) if folder_stack else ""
+            meta = {
+                "url": url,
+                "title": title.strip(),
+                "tags": tags,
+                "created": iso_now(),  # (optional: parse ADD_DATE below)
+            }
+            # harvest ADD_DATE -> created
+            add_date = re.search(r'\bADD_DATE="(\d+)"', line)
+            if add_date:
+                try:
+                    from datetime import datetime, timezone
+
+                    meta["created"] = datetime.fromtimestamp(
+                        int(add_date.group(1)), tz=timezone.utc
+                    ).isoformat()
+                except Exception:
+                    pass
+            entries.append((path, meta))
+            i += 1
+            continue
+
+        # FOLDER END: </DL> or </DL><p>
+        if re.match(r"</DL\b", line, re.I):
             if folder_stack:
                 folder_stack.pop()
+            i += 1
+            continue
+
         i += 1
     return entries
 
