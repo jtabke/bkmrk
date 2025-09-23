@@ -673,8 +673,10 @@ class TestCmdImport:
 
         # Create Netscape with ADD_DATE
         import time
+        from datetime import datetime, timezone
 
         timestamp = int(time.time())
+        expected_created = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
         netscape_content = f"""<!DOCTYPE NETSCAPE-Bookmark-file-1>
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
@@ -698,8 +700,8 @@ class TestCmdImport:
         fpath = files[0]
 
         meta, body = load_entry(fpath)
-        # Should have created timestamp from import, not ADD_DATE
-        assert "created" in meta
+        # Should have created timestamp from ADD_DATE
+        assert meta["created"] == expected_created
 
     def test_import_netscape_overwrite_without_force_skips(self, tmp_path):
         """Should skip existing bookmark without --force."""
@@ -908,6 +910,42 @@ title: Existing
         assert meta["url"] == "https://news.ycombinator.com"
         assert meta["title"] == "Hacker News"
         assert meta["tags"] == ["news"]
+
+    def test_import_netscape_h3_with_attributes(self, tmp_path):
+        """Should parse H3 tags with attributes."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        # Create Netscape HTML with H3 having attributes
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+<DT><H3 class="folder" id="dev">dev</H3>
+<DL><p>
+<DT><A HREF="https://example.com">Test</A>
+</DL><p>
+</DL><p>
+"""
+
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(netscape_content)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.file = str(netscape_file)
+        args.force = False
+
+        cmd_import(args)
+
+        # Check that folder was created despite attributes
+        assert (store / "dev").is_dir()
+        dev_files = list((store / "dev").glob("*.bm"))
+        assert len(dev_files) == 1
+        meta, _ = load_entry(dev_files[0])
+        assert meta["url"] == "https://example.com"
+        assert meta["title"] == "Test"
 
 
 class TestCmdExport:
