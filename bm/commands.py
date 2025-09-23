@@ -371,13 +371,61 @@ NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 NETSCAPE_FOOTER = "</DL><p>\n"
 
 
+def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
+    """Build Netscape HTML with folder hierarchy from entries."""
+    # entries: list of (path, meta)
+    # path is like "dev/python/fastapi-abc"
+    # meta has url, title, etc.
+
+    def build_html(node: Dict[str, Any]) -> str:
+        html = ""
+        # first bookmarks, then folders
+        bookmarks = node.get("__bookmarks__", [])
+        for bm in bookmarks:
+            html += bm
+        for key, value in sorted(node.items()):
+            if key == "__bookmarks__":
+                continue
+            if isinstance(value, dict):
+                # folder
+                html += f"<DT><H3>{key}</H3>\n<DL><p>\n"
+                html += build_html(value)
+                html += "</DL><p>\n"
+        return html
+
+    root = {}
+    for path, meta in entries:
+        parts = path.split("/")
+        current = root
+        for part in parts[:-1]:  # all but last are folders
+            if part not in current:
+                current[part] = {}
+            current = current[part]
+        # now current is the dict for the folder containing the bookmark
+        if "__bookmarks__" not in current:
+            current["__bookmarks__"] = []
+        add_date = to_epoch(parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))) or ""
+        tags = ",".join(meta.get("tags", []))
+        title = (
+            (meta.get("title") or meta.get("url") or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        url = (meta.get("url") or "").replace("&", "&amp;").replace('"', "&quot;")
+        bookmark_html = f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n'
+        current["__bookmarks__"].append(bookmark_html)
+
+    return build_html(root)
+
+
 def cmd_export(args) -> None:
     """Export bookmarks."""
     store = Path(args.store or DEFAULT_STORE)
     if args.fmt == "netscape":
-        out = [NETSCAPE_HEADER]
         since_dt = parse_iso(args.since) if args.since else None
         want_host = (args.host or "").lower()
+        entries = []
         for _, rel, meta, _ in _iter_entries(store):
             if want_host:
                 host = urlparse(meta.get("url", "")).netloc.lower()
@@ -389,18 +437,9 @@ def cmd_export(args) -> None:
             ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
             if since_dt and (not ts or ts < since_dt):
                 continue
-            add_date = to_epoch(ts) or ""
-            tags = ",".join(meta.get("tags", []))
-            title = (
-                (meta.get("title") or meta.get("url") or "")
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-            url = (meta.get("url") or "").replace("&", "&amp;").replace('"', "&quot;")
-            out.append(f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n')
-        out.append(NETSCAPE_FOOTER)
-        sys.stdout.write("".join(out))
+            entries.append((str(rel), meta))
+        html_body = _build_netscape_tree(entries)
+        sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
     elif args.fmt == "json":
         rows = []
         for _, rel, meta, _ in _iter_entries(store):
@@ -419,28 +458,58 @@ def cmd_export(args) -> None:
         die("unknown export format")
 
 
+def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
+    """Parse Netscape HTML and return list of (path, meta) for bookmarks."""
+    # Parse the HTML to extract bookmarks with their folder paths
+    entries = []
+    folder_stack = []  # list of folder names
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("<DT><H3>"):
+            # folder start
+            m = re.search(r"<DT><H3>(.*?)</H3>", line, re.I)
+            if m:
+                folder_name = html.unescape(m.group(1))
+                folder_stack.append(folder_name)
+        elif line.startswith("<DT><A"):
+            # bookmark
+            m = re.search(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', line, re.I)
+            if m:
+                url, title_html = m.group(1), m.group(2)
+                title = html.unescape(re.sub("<[^>]+>", "", title_html))
+                tagm = re.search(r'TAGS="([^"]*)"', line, re.I)
+                tags = [t.strip() for t in (tagm.group(1) if tagm else "").split(",") if t.strip()]
+                path = "/".join(folder_stack) if folder_stack else ""
+                meta = {
+                    "url": url,
+                    "title": title.strip(),
+                    "tags": tags,
+                    "created": iso_now(),
+                }
+                entries.append((path, meta))
+        elif line.startswith("</DL>"):
+            # folder end
+            if folder_stack:
+                folder_stack.pop()
+        i += 1
+    return entries
+
+
 def cmd_import(args) -> None:
     """Import bookmarks."""
     store = Path(args.store or DEFAULT_STORE)
     store.mkdir(parents=True, exist_ok=True)
     if args.fmt == "netscape":
         text = Path(args.file).read_text(encoding="utf-8", errors="replace")
-        # crude regex parse for <A ... HREF="...">title</A>
-        for m in re.finditer(r'<A\s+[^>]*HREF="([^"]+)"[^>]*>(.*?)</A>', text, flags=re.I | re.S):
-            url, title_html = m.group(1), m.group(2)
-            title = html.unescape(re.sub("<[^>]+>", "", title_html))
-            tagm = re.search(r'TAGS="([^"]+)"', m.group(0))
-            tags = [t.strip() for t in tagm.group(1).split(",")] if tagm else []
-            slug = create_slug_from_url(url)
-            fpath = id_to_path(store, slug)
+        entries = _parse_netscape_html(text)
+        for path, meta in entries:
+            slug = create_slug_from_url(meta["url"])
+            full_path = f"{path}/{slug}" if path else slug
+            fpath = id_to_path(store, full_path)
             if fpath.exists() and not args.force:
                 continue
-            meta = {
-                "url": url,
-                "title": title.strip(),
-                "tags": [t for t in tags if t],
-                "created": iso_now(),
-            }
             fpath.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(fpath, build_text(meta, ""))
         print("import ok")

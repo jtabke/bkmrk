@@ -217,7 +217,7 @@ bm.py tag rm  <ID|path> tag1
 
 ### `export` and `import`
 
-Netscape HTML (for browsers) and JSON exports; Netscape import.
+Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
 
 ```bash
 bm.py export netscape [--host HOST] [--since ISO|YYYY-MM-DD] > bookmarks.html
@@ -314,7 +314,6 @@ pytest -q
 
 - `bm dedupe` (merge by normalized URL, union tags)
 - `bm reindex` + optional on‑disk index for very large stores
-- Import/Export folder hierarchies from Netscape HTML
 - Markdown/CSV exports
 - Simple HTTP UI (`bm serve`) and browser extension hooks
 - Optional encryption (GPG or git‑crypt) for private notes
