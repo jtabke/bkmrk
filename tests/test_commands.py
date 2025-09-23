@@ -845,6 +845,70 @@ title: Existing
         # HTML entities should be decoded
         assert meta["title"] == '<Bold> & "Quoted"'
 
+    def test_import_netscape_with_folders(self, tmp_path):
+        """Should import Netscape HTML with folder hierarchies."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        # Create Netscape HTML with folders
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+<DT><A HREF="https://root.com">Root Bookmark</A>
+<DT><H3>dev</H3>
+<DL><p>
+<DT><H3>python</H3>
+<DL><p>
+<DT><A HREF="https://fastapi.tiangolo.com" TAGS="python,web">FastAPI</A>
+</DL><p>
+</DL><p>
+<DT><H3>news</H3>
+<DL><p>
+<DT><A HREF="https://news.ycombinator.com" TAGS="news">Hacker News</A>
+</DL><p>
+</DL><p>
+"""
+
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(netscape_content)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.file = str(netscape_file)
+        args.force = False
+
+        cmd_import(args)
+
+        # Check root bookmark
+        root_files = list(store.glob("*.bm"))
+        assert len(root_files) == 1
+        meta, _ = load_entry(root_files[0])
+        assert meta["url"] == "https://root.com"
+        assert meta["title"] == "Root Bookmark"
+
+        # Check folder structure exists
+        assert (store / "dev").is_dir()
+        assert (store / "dev" / "python").is_dir()
+        assert (store / "news").is_dir()
+
+        # Check dev/python/ has one file
+        python_files = list((store / "dev" / "python").glob("*.bm"))
+        assert len(python_files) == 1
+        meta, _ = load_entry(python_files[0])
+        assert meta["url"] == "https://fastapi.tiangolo.com"
+        assert meta["title"] == "FastAPI"
+        assert meta["tags"] == ["python", "web"]
+
+        # Check news/ has one file
+        news_files = list((store / "news").glob("*.bm"))
+        assert len(news_files) == 1
+        meta, _ = load_entry(news_files[0])
+        assert meta["url"] == "https://news.ycombinator.com"
+        assert meta["title"] == "Hacker News"
+        assert meta["tags"] == ["news"]
+
 
 class TestCmdExport:
     """Test cmd_export function."""
@@ -936,6 +1000,81 @@ modified: 2023-01-15T10:00:00Z
         # Should be sorted by path (a before b)
         assert rows[0]["path"] == "a"
         assert rows[1]["path"] == "b"
+
+    def test_export_netscape_with_folders(self, tmp_path, capsys):
+        """Should export bookmarks with folder hierarchies in Netscape format."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        # Create bookmarks in folders
+        (store / "dev").mkdir()
+        (store / "dev" / "python").mkdir()
+        (store / "news").mkdir()
+
+        # Bookmark in dev/python/
+        content1 = """---
+url: https://fastapi.tiangolo.com
+title: FastAPI
+tags: [python, web]
+created: 2023-01-15T10:00:00Z
+---
+"""
+        (store / "dev" / "python" / "fastapi.bm").write_text(content1)
+
+        # Bookmark in news/
+        content2 = """---
+url: https://news.ycombinator.com
+title: Hacker News
+tags: [news]
+created: 2023-01-16T10:00:00Z
+---
+"""
+        (store / "news" / "hn.bm").write_text(content2)
+
+        # Bookmark at root
+        content3 = """---
+url: https://example.com
+title: Root Bookmark
+tags: []
+created: 2023-01-17T10:00:00Z
+---
+"""
+        (store / "root.bm").write_text(content3)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.host = None
+        args.since = None
+
+        cmd_export(args)
+        captured = capsys.readouterr()
+
+        output = captured.out
+        # Check root bookmark
+        assert 'HREF="https://example.com"' in output
+        assert ">Root Bookmark</A>" in output
+
+        # Check folder structure
+        assert "<DT><H3>dev</H3>" in output
+        assert "<DT><H3>news</H3>" in output
+        assert "<DT><H3>python</H3>" in output
+
+        # Check bookmarks in folders
+        assert 'HREF="https://fastapi.tiangolo.com"' in output
+        assert ">FastAPI</A>" in output
+        assert 'HREF="https://news.ycombinator.com"' in output
+        assert ">Hacker News</A>" in output
+
+        # Verify nesting: dev contains python, which contains fastapi
+        # The HTML should have dev > python > fastapi
+        lines = output.splitlines()
+        dev_index = next(i for i, line in enumerate(lines) if "<DT><H3>dev</H3>" in line)
+        python_index = next(i for i, line in enumerate(lines) if "<DT><H3>python</H3>" in line)
+        fastapi_index = next(
+            i for i, line in enumerate(lines) if 'HREF="https://fastapi.tiangolo.com"' in line
+        )
+        assert dev_index < python_index < fastapi_index
 
 
 class TestCmdOpen:
