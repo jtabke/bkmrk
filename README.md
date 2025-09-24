@@ -34,9 +34,10 @@ A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `
   - [`search`](#search)
   - [`show` and `open`](#show-and-open)
   - [`edit`, `rm`, `mv`](#edit-rm-mv)
-  - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
-  - [`export` and `import`](#export-and-import)
-  - [`sync`](#sync)
+   - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
+   - [`dirs`](#dirs)
+   - [`export` and `import`](#export-and-import)
+   - [`sync`](#sync)
 
 - [Filtering & output formats](#filtering--output-formats)
 - [Integration recipes](#integration-recipes)
@@ -100,6 +101,12 @@ python bm.py --help
 
 # search across title/url/tags/body
 ./bm.py search kernel
+
+# search within a specific path
+./bm.py search kernel --path dev/linux
+
+# list directory prefixes
+./bm.py dirs
 
 # open the first result
 ID=$(./bm.py search kernel --jsonl | head -1 | jq -r '.id')
@@ -177,7 +184,7 @@ Prints the stable ID on success.
 List bookmarks (newest first).
 
 ```bash
-bm.py list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--json|--jsonl]
+bm.py list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|--jsonl]
 ```
 
 ### `search`
@@ -185,7 +192,7 @@ bm.py list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--json|--jsonl]
 Full‑text search across title, url, tags, and body.
 
 ```bash
-bm.py search <query> [--json|--jsonl]
+bm.py search <query> [--path PREFIX] [--json|--jsonl]
 ```
 
 ### `show` and `open`
@@ -215,6 +222,14 @@ bm.py tag add <ID|path> tag1 tag2
 bm.py tag rm  <ID|path> tag1
 ```
 
+### `dirs`
+
+List all known directory prefixes in the bookmark store.
+
+```bash
+bm.py dirs [--json]
+```
+
 ### `export` and `import`
 
 Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
@@ -238,6 +253,7 @@ bm.py sync
 ## Filtering & output formats
 
 - `--host` matches the URL host (case‑insensitive, ignores leading `www.`)
+- `--path` filters by path prefix (e.g., `--path dev/python` shows only entries under that directory tree)
 - `--since` accepts `YYYY-MM-DD` or full ISO timestamps; comparisons are proper datetimes
 - `--json` emits a single JSON array; `--jsonl` outputs one JSON object per line (NDJSON)
 
@@ -263,6 +279,20 @@ bm.py list --host example.com --jsonl | head -1 | jq -r '.id' | xargs -r bm.py o
 
 ```bash
 bm.py list --host news.ycombinator.com --jsonl | jq -r '.id' | xargs -n1 bm.py tag add hn
+```
+
+**List bookmarks in a specific category**
+
+```bash
+bm.py list --path dev/python
+bm.py search "framework" --path dev
+```
+
+**Explore directory structure**
+
+```bash
+bm.py dirs
+bm.py dirs --json | jq
 ```
 
 **Export → browser import**
