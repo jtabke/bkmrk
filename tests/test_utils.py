@@ -109,8 +109,8 @@ class TestNormalizeSlug:
         assert normalize_slug("Hello/World") == "hello/world"
 
     def test_special_chars(self):
-        """Should replace special characters with dashes."""
-        assert normalize_slug("hello@world!") == "hello-world"
+        """Should remove special characters."""
+        assert normalize_slug("hello@world!") == "helloworld"
 
     def test_multiple_dashes(self):
         """Should collapse multiple dashes."""
