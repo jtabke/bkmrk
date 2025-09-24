@@ -4,6 +4,7 @@ import argparse
 
 from .commands import (
     cmd_add,
+    cmd_dirs,
     cmd_edit,
     cmd_export,
     cmd_import,
@@ -56,12 +57,14 @@ def main() -> None:
     p.add_argument("-t", "--tag", help="Filter by tag (folder segment or header tag)")
     p.add_argument("--host", help="Filter by URL host (exact, 'www.' ignored)")
     p.add_argument("--since", help="ISO date/time or YYYY-MM-DD (lower bound)")
+    p.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
     p.add_argument("--json", action="store_true", help="Emit JSON array")
     p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_list)
 
     p = sp.add_parser("search", help="Full-text search over title/url/tags/body")
     p.add_argument("query")
+    p.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
     p.add_argument("--json", action="store_true", help="Emit JSON array")
     p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_search)
@@ -82,6 +85,10 @@ def main() -> None:
 
     p = sp.add_parser("tags", help="List all discovered tags")
     p.set_defaults(func=cmd_tags)
+
+    p = sp.add_parser("dirs", help="List known directory prefixes")
+    p.add_argument("--json", action="store_true", help="Emit JSON array")
+    p.set_defaults(func=cmd_dirs)
 
     p = sp.add_parser("tag", help="Mutate tags without editing")
     p.add_argument("action", choices=["add", "rm"])

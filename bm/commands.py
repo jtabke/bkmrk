@@ -188,6 +188,18 @@ def _matches_since(meta, since_dt):
     return ts and ts >= since_dt
 
 
+def _matches_path(rel, path_prefix):
+    if not path_prefix:
+        return True
+    # Normalize path prefix (remove leading/trailing slashes)
+    path_prefix = path_prefix.strip("/")
+    if not path_prefix:
+        return True
+    # Check if relative path starts with the prefix
+    rel_str = str(rel)
+    return rel_str.startswith(path_prefix + "/") or rel_str == path_prefix
+
+
 def _build_row(rel, meta, ts):
     url = meta.get("url", "")
     return {
@@ -206,10 +218,17 @@ def _collect_rows(store: Path, args) -> List[dict]:
     rows = []
     since_dt = parse_iso(args.since) if args.since else None
     want_host = (args.host or "").lower()
+    want_path = getattr(args, "path", None)
+    if want_path and isinstance(want_path, str):
+        want_path = want_path.strip("/")
+    else:
+        want_path = ""
     for _, rel, meta, _ in _iter_entries(store):
         if not _matches_tag(rel, meta, args.tag):
             continue
         if not _matches_host(meta, want_host):
+            continue
+        if not _matches_path(rel, want_path):
             continue
         ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
         if not _matches_since(meta, since_dt):
@@ -247,8 +266,15 @@ def cmd_search(args) -> None:
     """Search bookmarks."""
     store = Path(args.store or DEFAULT_STORE)
     q = args.query.lower()
+    want_path = getattr(args, "path", None)
+    if want_path and isinstance(want_path, str):
+        want_path = want_path.strip("/")
+    else:
+        want_path = ""
     hits = []
     for _, rel, meta, body in _iter_entries(store):
+        if not _matches_path(rel, want_path):
+            continue
         blob = "\n".join(
             [
                 meta.get("title", ""),
@@ -343,6 +369,23 @@ def cmd_tags(args) -> None:
     all_tags = sorted(folder_tags | header_tags)
     for t in all_tags:
         print(t)
+
+
+def cmd_dirs(args) -> None:
+    """List known directory prefixes."""
+    store = Path(args.store or DEFAULT_STORE)
+    dirs = set()
+    for _, rel, _, _ in _iter_entries(store):
+        # Add all parent directories
+        parts = rel.parts
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+    all_dirs = sorted(dirs)
+    if args.json:
+        print(json.dumps(all_dirs, ensure_ascii=False))
+    else:
+        for d in all_dirs:
+            print(d)
 
 
 def cmd_tag(args) -> None:
