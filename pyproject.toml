@@ -24,6 +24,7 @@ dev = [
     "pre-commit",
     "commitizen"
 ]
+build = ["twine", "build"]
 
 [project.scripts]
 bm = "bm.cli:main"
