@@ -21,7 +21,8 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "ruff",
-    "pre-commit"
+    "pre-commit",
+    "commitizen"
 ]
 
 [project.scripts]
@@ -48,3 +49,10 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "$version"
+version_files = ["pyproject.toml:version"]
+update_changelog_on_bump = true
