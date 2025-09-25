@@ -150,6 +150,13 @@ class TestNormalizeSlug:
         result = normalize_slug("héllo wörld")
         assert result == "héllo-wörld"
 
+    def test_normalize_slug_strip_dashes_from_path_segments(self):
+        """Should strip trailing dashes from each path segment."""
+        assert normalize_slug("business-/slug") == "business/slug"
+        assert normalize_slug("business-/slug-") == "business/slug"
+        assert normalize_slug("-business/slug") == "business/slug"
+        assert normalize_slug("business-/-slug") == "business/slug"
+
 
 class TestRejectUnsafe:
     """Test _reject_unsafe function."""

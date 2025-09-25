@@ -72,7 +72,11 @@ def normalize_slug(s: str) -> str:
     s = s.lower().strip().strip("/").replace(" ", "-")
     s = re.sub(r"[^\w\-/\.]", "", s)
     s = re.sub(r"-{2,}", "-", s)
-    return s.strip("-") or "untitled"
+    s = s.strip("-")
+    if "/" in s:
+        parts = [p.strip("-") for p in s.split("/") if p]
+        s = "/".join(parts)
+    return s or "untitled"
 
 
 def _reject_unsafe(rel: str) -> str:
