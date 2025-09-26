@@ -1,4 +1,4 @@
-# bm — plain‑text, pass‑style bookmarks
+# bm — plain‑text bookmarks
 
 A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `pass`:
 
@@ -89,6 +89,9 @@ python -m bm.cli --help
 ```bash
 # initialize a new store (optionally a git repo)
 bm init --git
+
+# import bookmarks from a browser export (Netscape HTML)
+bm import netscape ~/Downloads/bookmarks.html
 
 # add a bookmark
 bm add https://example.com -n "Example" -t ref,demo -d "Short note"
