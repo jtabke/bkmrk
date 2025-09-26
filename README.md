@@ -21,23 +21,21 @@ A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Concepts](#concepts)
-
   - [Store layout](#store-layout)
   - [Bookmark file format](#bookmark-file-format)
   - [IDs](#ids)
 
 - [CLI usage](#cli-usage)
-
   - [`init`](#init)
   - [`add`](#add)
   - [`list`](#list)
   - [`search`](#search)
   - [`show` and `open`](#show-and-open)
   - [`edit`, `rm`, `mv`](#edit-rm-mv)
-   - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
-   - [`dirs`](#dirs)
-   - [`export` and `import`](#export-and-import)
-   - [`sync`](#sync)
+  - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
+  - [`dirs`](#dirs)
+  - [`export` and `import`](#export-and-import)
+  - [`sync`](#sync)
 
 - [Filtering & output formats](#filtering--output-formats)
 - [Integration recipes](#integration-recipes)
@@ -57,32 +55,31 @@ Most bookmark tools are databases or browser‑locked. `bm` chooses **text first
 
 ## Install
 
-Install from source (requires Python >=3.8):
+Requires Python >=3.8. Install with `pip` (or `pipx`) to get the `bm` console script:
 
 ```bash
 git clone https://github.com/jtabke/bkmrk
-cd bm
-pip install .
+cd bkmrk
+python -m pip install .
 ```
 
-Or for development (editable install):
+Development workflows can pull in the optional extras declared in `pyproject.toml`:
 
 ```bash
-pip install -e .
+python -m pip install -e '.[dev]'
 ```
 
-This installs the `bm` command globally.
-
-Alternatively, run directly without installing:
+Prefer running straight from the repository? The module entry point works without
+installation:
 
 ```bash
-python3 bm.py --help
+python -m bm.cli --help
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-python bm.py --help
+python -m bm.cli --help
 ```
 
 ---
@@ -91,29 +88,29 @@ python bm.py --help
 
 ```bash
 # initialize a new store (optionally a git repo)
-./bm.py init --git
+bm init --git
 
 # add a bookmark
-./bm.py add https://example.com -n "Example" -t ref,demo -d "Short note"
+bm add https://example.com -n "Example" -t ref,demo -d "Short note"
 
 # list newest bookmarks (ID, path, title, URL)
-./bm.py list
+bm list
 
 # search across title/url/tags/body
-./bm.py search kernel
+bm search kernel
 
 # search within a specific path
-./bm.py search kernel --path dev/linux
+bm search kernel --path dev/linux
 
 # list directory prefixes
-./bm.py dirs
+bm dirs
 
 # open the first result
-ID=$(./bm.py search kernel --jsonl | head -1 | jq -r '.id')
-./bm.py open "$ID"
+ID=$(bm search kernel --jsonl | head -1 | jq -r '.id')
+bm open "$ID"
 
 # export for browsers (Netscape HTML)
-./bm.py export netscape > bookmarks.html
+bm export netscape > bookmarks.html
 ```
 
 ---
@@ -159,14 +156,14 @@ Each bookmark has a **stable ID** derived from its URL (BLAKE2b short hash). The
 
 ## CLI usage
 
-Run `./bm.py --help` or `./bm.py <command> --help` for command details.
+Run `bm --help` or `bm <command> --help` for command details.
 
 ### `init`
 
 Create a store; optional `--git` initializes a Git repo.
 
 ```bash
-bm.py init --git
+bm init --git
 ```
 
 ### `add`
@@ -174,7 +171,7 @@ bm.py init --git
 Add a bookmark. `--edit` opens your `$EDITOR` with a pre‑filled template.
 
 ```bash
-bm.py add <url> [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
+bm add <url> [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
 ```
 
 Prints the stable ID on success.
@@ -184,7 +181,7 @@ Prints the stable ID on success.
 List bookmarks (newest first).
 
 ```bash
-bm.py list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|--jsonl]
+bm list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|--jsonl]
 ```
 
 ### `search`
@@ -192,7 +189,7 @@ bm.py list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--js
 Full‑text search across title, url, tags, and body.
 
 ```bash
-bm.py search <query> [--path PREFIX] [--json|--jsonl]
+bm search <query> [--path PREFIX] [--json|--jsonl]
 ```
 
 ### `show` and `open`
@@ -200,16 +197,16 @@ bm.py search <query> [--path PREFIX] [--json|--jsonl]
 Display metadata/notes or open the URL in your default browser:
 
 ```bash
-bm.py show <ID|path>
-bm.py open <ID|path>
+bm show <ID|path>
+bm open <ID|path>
 ```
 
 ### `edit`, `rm`, `mv`
 
 ```bash
-bm.py edit <ID|path>   # bumps modified timestamp
-bm.py rm <ID|path>
-bm.py mv <SRC> <DST> [-f]
+bm edit <ID|path>   # bumps modified timestamp
+bm rm <ID|path>
+bm mv <SRC> <DST> [-f]
 ```
 
 ### `tags` and `tag add|rm`
@@ -217,9 +214,9 @@ bm.py mv <SRC> <DST> [-f]
 List discovered tags (from folder segments and header tags), or mutate tags without opening an editor.
 
 ```bash
-bm.py tags
-bm.py tag add <ID|path> tag1 tag2
-bm.py tag rm  <ID|path> tag1
+bm tags
+bm tag add <ID|path> tag1 tag2
+bm tag rm  <ID|path> tag1
 ```
 
 ### `dirs`
@@ -227,7 +224,7 @@ bm.py tag rm  <ID|path> tag1
 List all known directory prefixes in the bookmark store.
 
 ```bash
-bm.py dirs [--json]
+bm dirs [--json]
 ```
 
 ### `export` and `import`
@@ -235,9 +232,9 @@ bm.py dirs [--json]
 Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
 
 ```bash
-bm.py export netscape [--host HOST] [--since ISO|YYYY-MM-DD] > bookmarks.html
-bm.py export json > dump.json
-bm.py import netscape bookmarks.html [-f]
+bm export netscape [--host HOST] [--since ISO|YYYY-MM-DD] > bookmarks.html
+bm export json > dump.json
+bm import netscape bookmarks.html [-f]
 ```
 
 ### `sync`
@@ -245,7 +242,7 @@ bm.py import netscape bookmarks.html [-f]
 If the store is a Git repo, stage/commit and (if upstream exists) push.
 
 ```bash
-bm.py sync
+bm sync
 ```
 
 ---
@@ -266,39 +263,39 @@ Common JSON schema fields: `id`, `path`, `title`, `url`, `tags`, `created`, `mod
 **fzf launcher**
 
 ```bash
-bm.py list --jsonl | fzf --with-nth=2.. | awk '{print $1}' | xargs -r bm.py open
+bm list --jsonl | fzf --with-nth=2.. | awk '{print $1}' | xargs -r bm open
 ```
 
 **Open the latest saved from a host**
 
 ```bash
-bm.py list --host example.com --jsonl | head -1 | jq -r '.id' | xargs -r bm.py open
+bm list --host example.com --jsonl | head -1 | jq -r '.id' | xargs -r bm open
 ```
 
 **Bulk tag HN links**
 
 ```bash
-bm.py list --host news.ycombinator.com --jsonl | jq -r '.id' | xargs -n1 bm.py tag add hn
+bm list --host news.ycombinator.com --jsonl | jq -r '.id' | xargs -n1 bm tag add hn
 ```
 
 **List bookmarks in a specific category**
 
 ```bash
-bm.py list --path dev/python
-bm.py search "framework" --path dev
+bm list --path dev/python
+bm search "framework" --path dev
 ```
 
 **Explore directory structure**
 
 ```bash
-bm.py dirs
-bm.py dirs --json | jq
+bm dirs
+bm dirs --json | jq
 ```
 
 **Export → browser import**
 
 ```bash
-bm.py export netscape > ~/Desktop/bookmarks.html
+bm export netscape > ~/Desktop/bookmarks.html
 # Import that file in your browser’s bookmarks manager
 ```
 
@@ -318,7 +315,7 @@ To automatically export bookmarks to Netscape HTML for browser import:
 ```bash
 #!/bin/bash
 # auto_export.sh
-bm.py export netscape > ~/bookmarks_auto.html
+bm export netscape > ~/bookmarks_auto.html
 echo "Bookmarks exported to ~/bookmarks_auto.html. Import this file in your browser."
 ```
 
