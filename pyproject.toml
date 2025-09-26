@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bm"
+name = "bkmrk"
 version = "0.1.0"
 description = "Plain-text, pass-style bookmarks"
 readme = "README.md"
