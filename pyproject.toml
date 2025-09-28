@@ -30,7 +30,7 @@ build = ["twine", "build"]
 bm = "bm.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 
 [tool.ruff]
 line-length = 100
@@ -47,6 +47,7 @@ line-ending = "auto"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"

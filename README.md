@@ -73,13 +73,13 @@ Prefer running straight from the repository? The module entry point works withou
 installation:
 
 ```bash
-python -m bm.cli --help
+python -m bm --help
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-python -m bm.cli --help
+python -m bm --help
 ```
 
 ---
