@@ -55,7 +55,13 @@ Most bookmark tools are databases or browser‑locked. `bm` chooses **text first
 
 ## Install
 
-Requires Python >=3.8. Install with `pip` (or `pipx`) to get the `bm` console script:
+Requires Python >=3.8. Install from PyPI:
+
+```bash
+pip install bkmrk
+```
+
+For the latest development version, clone and install locally:
 
 ```bash
 git clone https://github.com/jtabke/bkmrk
