@@ -11,7 +11,7 @@ import textwrap
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from .io import atomic_write, build_text, load_entry, parse_front_matter
@@ -25,6 +25,7 @@ from .utils import (
     is_relative_to,
     iso_now,
     normalize_slug,
+    normalize_url_for_compare,
     parse_iso,
     rid,
     to_epoch,
@@ -198,6 +199,123 @@ def _matches_path(rel, path_prefix):
     # Check if relative path starts with the prefix
     rel_str = str(rel)
     return rel_str.startswith(path_prefix + "/") or rel_str == path_prefix
+
+
+def _entry_score(entry: Dict[str, Any]) -> Tuple[int, int, float, str]:
+    body_len = len(entry["body"].strip())
+    title_len = len(entry["meta"].get("title", "").strip())
+    created_dt = parse_iso(entry["meta"].get("created")) or parse_iso(entry["meta"].get("modified"))
+    if created_dt and created_dt.tzinfo is None:
+        created_dt = created_dt.replace(tzinfo=timezone.utc)
+    created_ts = created_dt.timestamp() if created_dt else float("inf")
+    return (-body_len, -title_len, created_ts, str(entry["rel"]))
+
+
+def _select_survivor(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return min(entries, key=_entry_score)
+
+
+def _prune_empty_dirs(store: Path, start: Path) -> None:
+    cur = start
+    while cur != store and cur.exists() and not any(cur.iterdir()):
+        cur.rmdir()
+        cur = cur.parent
+
+
+def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _earliest_dt(current: Optional[datetime], candidate: Optional[datetime]) -> Optional[datetime]:
+    candidate = _normalize_dt(candidate)
+    if candidate is None:
+        return current
+    if current is None or candidate < current:
+        return candidate
+    return current
+
+
+def _latest_dt(current: Optional[datetime], candidate: Optional[datetime]) -> Optional[datetime]:
+    candidate = _normalize_dt(candidate)
+    if candidate is None:
+        return current
+    if current is None or candidate > current:
+        return candidate
+    return current
+
+
+def _collect_group_stats(
+    entries: List[Dict[str, Any]],
+) -> Tuple[Set[str], Optional[datetime], Optional[datetime], List[str]]:
+    tags_union: Set[str] = set()
+    earliest_created: Optional[datetime] = None
+    latest_modified: Optional[datetime] = None
+    title_candidates: List[str] = []
+
+    for entry in entries:
+        meta = entry["meta"]
+        tags_union.update(t.strip() for t in meta.get("tags", []) if t.strip())
+        tags_union.update(seg for seg in entry["rel"].parts[:-1] if seg)
+
+        title = meta.get("title", "").strip()
+        if title:
+            title_candidates.append(title)
+
+        earliest_created = _earliest_dt(earliest_created, parse_iso(meta.get("created")))
+        latest_modified = _latest_dt(latest_modified, parse_iso(meta.get("modified")))
+
+    return tags_union, earliest_created, latest_modified, title_candidates
+
+
+def _collect_body_parts(
+    entries: List[Dict[str, Any]], survivor: Dict[str, Any]
+) -> Tuple[List[str], bool]:
+    base_body = survivor["body"].rstrip()
+    parts: List[str] = [base_body] if base_body else []
+    notes_appended = False
+
+    for entry in entries:
+        if entry is survivor:
+            continue
+        extra_body = entry["body"].rstrip()
+        if extra_body:
+            notes_appended = True
+            parts.append(f"[Merged from {entry['rel']}]\n{extra_body}".rstrip())
+
+    return parts, notes_appended
+
+
+def _join_body_parts(parts: List[str]) -> str:
+    clean = [part for part in parts if part]
+    if not clean:
+        return ""
+    merged = "\n\n".join(clean)
+    return merged.rstrip() + "\n"
+
+
+def _merge_entry_group(
+    entries: List[Dict[str, Any]], survivor: Dict[str, Any]
+) -> Tuple[Dict[str, Any], str, List[str], bool, Optional[datetime], Optional[datetime]]:
+    merged_meta = dict(survivor["meta"])
+    tags_union, earliest_created, latest_modified, title_candidates = _collect_group_stats(entries)
+
+    if title_candidates and not merged_meta.get("title"):
+        title_candidates.sort(key=len, reverse=True)
+        merged_meta["title"] = title_candidates[0]
+
+    if earliest_created:
+        merged_meta["created"] = earliest_created.isoformat()
+
+    if latest_modified:
+        merged_meta["modified"] = latest_modified.isoformat()
+
+    body_parts, notes_appended = _collect_body_parts(entries, survivor)
+    tags = sorted(t for t in tags_union if t)
+    merged_body = _join_body_parts(body_parts)
+
+    return merged_meta, merged_body, tags, notes_appended, earliest_created, latest_modified
 
 
 def _build_row(rel, meta, ts):
@@ -386,6 +504,111 @@ def cmd_dirs(args) -> None:
     else:
         for d in all_dirs:
             print(d)
+
+
+def _group_entries_by_url(store: Path) -> Dict[str, List[Dict[str, Any]]]:
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for path, rel, meta, body in _iter_entries(store):
+        url = meta.get("url", "").strip()
+        key = normalize_url_for_compare(url)
+        if not key:
+            continue
+        buckets.setdefault(key, []).append(
+            {"path": path, "rel": rel, "meta": dict(meta), "body": body}
+        )
+    return buckets
+
+
+def _write_merged_entry(
+    survivor: Dict[str, Any], merged_meta: Dict[str, Any], merged_body: str, tags: List[str]
+) -> None:
+    merged_meta_for_write = dict(merged_meta)
+    merged_meta_for_write["tags"] = tags
+    merged_meta_for_write["modified"] = iso_now()
+    atomic_write(survivor["path"], build_text(merged_meta_for_write, merged_body))
+    survivor["meta"] = merged_meta_for_write
+    survivor["body"] = merged_body
+
+
+def _remove_group_entries(store: Path, entries: List[Dict[str, Any]]) -> None:
+    for entry in entries:
+        try:
+            entry["path"].unlink()
+        except FileNotFoundError:
+            continue
+        _prune_empty_dirs(store, entry["path"].parent)
+
+
+def _process_duplicate_group(
+    store: Path, canonical: str, group: List[Dict[str, Any]], dry_run: bool
+) -> Dict[str, Any]:
+    survivor = _select_survivor(group)
+    (
+        merged_meta,
+        merged_body,
+        tags,
+        notes_appended,
+        earliest_created,
+        latest_modified,
+    ) = _merge_entry_group(group, survivor)
+
+    removed_entries = [entry for entry in group if entry is not survivor]
+    action: Dict[str, Any] = {
+        "canonical_url": canonical,
+        "kept": str(survivor["rel"]),
+        "removed": [str(entry["rel"]) for entry in removed_entries],
+        "tags": tags,
+        "notes_appended": notes_appended,
+        "total": len(group),
+    }
+
+    if earliest_created:
+        action["created"] = earliest_created.isoformat()
+    if latest_modified:
+        action["latest_modified"] = latest_modified.isoformat()
+    if dry_run:
+        action["dry_run"] = True
+        return action
+
+    _write_merged_entry(survivor, merged_meta, merged_body, tags)
+    _remove_group_entries(store, removed_entries)
+    return action
+
+
+def cmd_dedupe(args) -> None:
+    """Merge duplicate bookmarks based on normalized URLs."""
+    store = Path(args.store or DEFAULT_STORE)
+    if not store.exists():
+        die(f"store not found: {store}")
+
+    buckets = _group_entries_by_url(store)
+    dry_run = bool(getattr(args, "dry_run", False))
+    actions = []
+
+    for canonical, group in buckets.items():
+        if len(group) < 2:
+            continue
+        actions.append(_process_duplicate_group(store, canonical, group, dry_run))
+
+    if args.json:
+        print(json.dumps(actions, ensure_ascii=False))
+        return
+
+    prefix = "DRY-RUN: " if dry_run else ""
+    if not actions:
+        print(f"{prefix}No duplicates found.")
+        return
+
+    for action in actions:
+        removed = ", ".join(action["removed"])
+        notes = "; notes merged" if action["notes_appended"] else ""
+        print(
+            f"{prefix}{action['total']} duplicates for {action['canonical_url']} -> "
+            f"keep {action['kept']}, remove [{removed}]{notes}"
+        )
+
+    plural = "s" if len(actions) != 1 else ""
+    print(f"{prefix}{len(actions)} duplicate group{plural} processed.")
 
 
 def cmd_tag(args) -> None:

@@ -12,6 +12,7 @@ from bm.utils import (
     is_relative_to,
     iso_now,
     normalize_slug,
+    normalize_url_for_compare,
     parse_iso,
     rid,
     to_epoch,
@@ -156,6 +157,31 @@ class TestNormalizeSlug:
         assert normalize_slug("business-/slug-") == "business/slug"
         assert normalize_slug("-business/slug") == "business/slug"
         assert normalize_slug("business-/-slug") == "business/slug"
+
+
+class TestNormalizeUrlForCompare:
+    """Test normalize_url_for_compare function."""
+
+    def test_basic_web_normalization(self):
+        """Should ignore scheme diffs, www, default ports, and unordered query."""
+        url1 = "HTTP://www.Example.com:80/foo//bar/?b=2&a=1#frag"
+        url2 = "https://example.com/foo/bar?a=1&b=2"
+        normalized = normalize_url_for_compare(url1)
+        assert normalized == normalize_url_for_compare(url2)
+        assert normalized == "example.com/foo/bar?a=1&b=2"
+
+    def test_missing_scheme(self):
+        """Should treat schemeless host paths as HTTP."""
+        assert normalize_url_for_compare("example.com/path") == "example.com/path"
+
+    def test_preserves_non_http_scheme(self):
+        """Should keep non web schemes intact."""
+        assert normalize_url_for_compare("mailto:user@example.com") == "mailto:user@example.com"
+
+    def test_default_https_port_removed(self):
+        """Should drop default HTTPS port."""
+        result = normalize_url_for_compare("https://example.com:443/foo")
+        assert result == "example.com/foo"
 
 
 class TestRejectUnsafe:

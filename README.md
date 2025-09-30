@@ -236,6 +236,19 @@ List all known directory prefixes in the bookmark store.
 bm dirs [--json]
 ```
 
+### `dedupe`
+
+Merge duplicate bookmarks that resolve to the same normalized URL. The command unions
+tags (including folder segments), keeps the most informative entry, and appends any extra
+notes with provenance markers.
+
+```bash
+bm dedupe [--dry-run] [--json]
+```
+
+- `--dry-run` prints the planned merges without modifying files
+- `--json` emits a machine-readable summary of the merge actions
+
 ### `export` and `import`
 
 Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
@@ -370,7 +383,6 @@ pytest -q
 
 ### Roadmap / ideas
 
-- `bm dedupe` (merge by normalized URL, union tags)
 - `bm reindex` + optional on‑disk index for very large stores
 - Markdown/CSV exports
 - Simple HTTP UI (`bm serve`) and browser extension hooks

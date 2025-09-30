@@ -4,6 +4,7 @@ import argparse
 
 from .commands import (
     cmd_add,
+    cmd_dedupe,
     cmd_dirs,
     cmd_edit,
     cmd_export,
@@ -89,6 +90,11 @@ def main() -> None:
     p = sp.add_parser("dirs", help="List known directory prefixes")
     p.add_argument("--json", action="store_true", help="Emit JSON array")
     p.set_defaults(func=cmd_dirs)
+
+    p = sp.add_parser("dedupe", help="Merge duplicate bookmarks by normalized URL")
+    p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
+    p.add_argument("--json", action="store_true", help="Emit JSON summary")
+    p.set_defaults(func=cmd_dedupe)
 
     p = sp.add_parser("tag", help="Mutate tags without editing")
     p.add_argument("action", choices=["add", "rm"])

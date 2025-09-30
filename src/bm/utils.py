@@ -2,14 +2,15 @@
 
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse
+from typing import Optional, Tuple
+from urllib.parse import ParseResult, parse_qsl, urlencode, urlparse
 
 from .models import FILE_EXT
 
@@ -127,6 +128,144 @@ def create_slug_from_url(url: str) -> str:
 def rid(url: str) -> str:
     """Stable short ID based on URL only (rename-safe)."""
     return hashlib.blake2b(url.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def _normalize_netloc_for_compare(scheme: str, netloc: str) -> str:
+    """Normalize host/userinfo/port for canonical URL comparison."""
+    if not netloc:
+        return ""
+    netloc = netloc.strip()
+    # Split userinfo from host:port if present
+    if "@" in netloc:
+        userinfo, host_port = netloc.rsplit("@", 1)
+        userinfo = userinfo.lower()
+    else:
+        userinfo, host_port = "", netloc
+
+    host_port = host_port.lower()
+    if host_port.startswith("www."):
+        host_port = host_port[4:]
+
+    if ":" in host_port:
+        host, port_str = host_port.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            host = host_port  # fallback; keep raw if port invalid
+            port = None
+        else:
+            default_http = scheme in {"http", ""} and port == 80
+            default_https = scheme == "https" and port == 443
+            if default_http or default_https:
+                port = None
+        host_port = host if port is None else f"{host}:{port}"
+
+    netloc_norm = host_port
+    if userinfo:
+        netloc_norm = f"{userinfo}@{netloc_norm}"
+    return netloc_norm
+
+
+def _normalize_path_for_compare(path: str) -> str:
+    """Normalize URL path for comparison (collapse slashes, remove trailing '/')."""
+    if not path:
+        return ""
+    # Ensure leading slash when path exists (unless already has it like //resource)
+    if not path.startswith("/"):
+        path = f"/{path}"
+
+    # Collapse duplicate slashes and resolve ".."/"." segments
+    collapsed = re.sub(r"/+", "/", path)
+    normalized = posixpath.normpath(collapsed)
+
+    # posixpath.normpath strips trailing slash; treat root specially
+    if normalized == ".":
+        normalized = ""
+    elif normalized == "/":
+        normalized = ""
+
+    return normalized
+
+
+def _parse_for_compare(raw: str) -> Tuple[ParseResult, str]:
+    """Return a parsed URL and canonical scheme for comparison."""
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc or "://" in raw:
+        return parsed, (parsed.scheme or "").lower()
+
+    candidate = urlparse(f"http://{raw}")
+    if candidate.netloc:
+        return candidate, "http"
+    return parsed, (parsed.scheme or "").lower()
+
+
+def _normalize_query_string(query: str) -> str:
+    """Sort query parameters and rebuild a stable query string."""
+    if not query:
+        return ""
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if not pairs:
+        return ""
+    pairs.sort()
+    return urlencode(pairs, doseq=True)
+
+
+def _compose_web_key(scheme: str, netloc: str, path: str, query: str) -> str:
+    prefix = "" if scheme in {"", "http", "https"} else f"{scheme}://"
+    key = f"{prefix}{netloc}{path}"
+    if query:
+        key = f"{key}?{query}"
+    return key
+
+
+def _compose_non_web_key(parsed: ParseResult, scheme: str, query: str, raw: str) -> str:
+    if scheme:
+        suffix = parsed.path
+        if parsed.params:
+            suffix = f"{suffix};{parsed.params}" if suffix else f";{parsed.params}"
+        if query:
+            suffix = f"{suffix}?{query}" if suffix else f"?{query}"
+        return f"{scheme}:{suffix}"
+    return raw.lower()
+
+
+def normalize_url_for_compare(url: str) -> str:
+    """Return a normalized key suitable for grouping equivalent URLs.
+
+    The normalization aims to treat typical duplicates as equal while keeping
+    non-web schemes distinct. Rules:
+      • Lowercase scheme and host, strip leading "www.".
+      • Remove default ports (80 for HTTP, 443 for HTTPS).
+      • Collapse redundant slashes and dot segments in the path; ignore trailing "/".
+      • Drop fragments and params; sort query parameters (preserving duplicates).
+      • Ignore scheme differences between HTTP and HTTPS (they map to the same key).
+      • Inputs without an explicit scheme fall back to HTTP semantics.
+
+    Args:
+        url: Raw URL string from a bookmark entry.
+
+    Returns:
+        A normalized string used as the dedupe key. Empty string for unusable URLs.
+    """
+
+    if not url:
+        return ""
+
+    raw = url.strip()
+    if not raw:
+        return ""
+
+    parsed, scheme = _parse_for_compare(raw)
+    netloc = _normalize_netloc_for_compare(scheme, parsed.netloc)
+    query = _normalize_query_string(parsed.query)
+
+    if netloc:
+        path = _normalize_path_for_compare(parsed.path)
+        if parsed.params:
+            path = f"{path};{parsed.params}" if path else f";{parsed.params}"
+        return _compose_web_key(scheme, netloc, path, query)
+
+    return _compose_non_web_key(parsed, scheme, query, raw)
 
 
 def _launch_editor(path: Path) -> None:

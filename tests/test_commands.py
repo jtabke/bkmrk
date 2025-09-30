@@ -6,6 +6,7 @@ import pytest
 
 from bm.commands import (
     cmd_add,
+    cmd_dedupe,
     cmd_edit,
     cmd_export,
     cmd_import,
@@ -1583,6 +1584,137 @@ tags: [zebra, alpha, zebra]
         # Should be sorted and deduped: alpha, zebra
         expected_tags = ["alpha", "zebra"]
         assert output_lines == expected_tags
+
+
+class TestCmdDedupe:
+    """Test cmd_dedupe function."""
+
+    def test_dedupe_merges_duplicates(self, tmp_path, capsys):
+        """Should merge duplicate URLs and union tags/notes."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        entry1 = store / "dev" / "example-one.bm"
+        entry1.parent.mkdir(parents=True)
+        entry1.write_text(
+            """---
+url: https://example.com/article?a=1&b=2
+title: First title
+tags: [alpha]
+created: 2024-01-01T00:00:00+00:00
+---
+Primary notes
+"""
+        )
+
+        entry2 = store / "inbox" / "example-two.bm"
+        entry2.parent.mkdir(parents=True)
+        entry2.write_text(
+            """---
+url: http://www.example.com:80/article?b=2&a=1
+title: Second title
+tags: [beta]
+created: 2024-02-01T00:00:00+00:00
+modified: 2024-03-01T00:00:00+00:00
+---
+Secondary notes
+"""
+        )
+
+        args = MagicMock()
+        args.store = str(store)
+        args.dry_run = False
+        args.json = False
+
+        cmd_dedupe(args)
+
+        captured = capsys.readouterr()
+        assert "duplicates for" in captured.out
+
+        files = sorted(store.rglob("*.bm"))
+        assert len(files) == 1
+
+        meta, body = load_entry(files[0])
+        assert meta["url"] in {
+            "https://example.com/article?a=1&b=2",
+            "http://www.example.com:80/article?b=2&a=1",
+        }
+        assert meta["created"] == "2024-01-01T00:00:00+00:00"
+        assert meta["title"] in {"First title", "Second title"}
+        assert meta["tags"] == ["alpha", "beta", "dev", "inbox"]
+        assert "Primary notes" in body
+        assert "Secondary notes" in body
+        assert ("[Merged from inbox/example-two]" in body) or (
+            "[Merged from dev/example-one]" in body
+        )
+
+    def test_dedupe_dry_run_keeps_files(self, tmp_path, capsys):
+        """Dry run should not modify the store."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        (store / "a").mkdir()
+        (store / "b").mkdir()
+
+        (store / "a" / "one.bm").write_text(
+            """---
+url: https://example.com
+---
+"""
+        )
+        (store / "b" / "two.bm").write_text(
+            """---
+url: http://example.com/
+---
+"""
+        )
+
+        args = MagicMock()
+        args.store = str(store)
+        args.dry_run = True
+        args.json = False
+
+        cmd_dedupe(args)
+
+        captured = capsys.readouterr()
+        assert "DRY-RUN" in captured.out
+        assert sorted(store.rglob("*.bm")) == [
+            store / "a" / "one.bm",
+            store / "b" / "two.bm",
+        ]
+
+    def test_dedupe_json_output(self, tmp_path, capsys):
+        """Should emit JSON when requested."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        (store / "one.bm").write_text(
+            """---
+url: https://example.com
+---
+"""
+        )
+        (store / "two.bm").write_text(
+            """---
+url: http://example.com
+---
+"""
+        )
+
+        args = MagicMock()
+        args.store = str(store)
+        args.dry_run = True
+        args.json = True
+
+        cmd_dedupe(args)
+
+        output = capsys.readouterr().out.strip()
+        import json
+
+        payload = json.loads(output)
+        assert payload
+        assert payload[0]["canonical_url"] == "example.com"
+        assert payload[0]["dry_run"]
 
 
 class TestCmdSync:
