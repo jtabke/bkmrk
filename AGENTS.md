@@ -2,7 +2,7 @@
 
 ## Build/Lint/Test Commands
 
-- **Build**: `python3 -m py_compile bm.py`
+- **Build**: `python3 -m compileall src`
 - **Lint**: `ruff check . && ruff format --check .`
 - **Format**: `ruff format .`
 - **Test all**: `pytest`
@@ -31,4 +31,3 @@
 - **Python version**: >=3.8
 - **Atomic writes**: Use `os.replace()` for file modifications
 - **Path safety**: Reject `..` and absolute paths in user input
-

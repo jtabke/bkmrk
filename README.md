@@ -375,7 +375,7 @@ From older versions where IDs depended on path: IDs are now **URL‑only** (stab
 
 ```bash
 # lint (optional) — stdlib only, so just run the script
-python3 -m py_compile bm.py
+python3 -m compileall src
 
 # run tests (if added)
 pytest -q
