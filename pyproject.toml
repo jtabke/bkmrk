@@ -19,13 +19,17 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov",
-    "ruff",
+    "commitizen",
     "pre-commit",
-    "commitizen"
+    "pytest-cov",
+    "pytest>=7.0",
+    "ruff",
 ]
-build = ["twine", "build"]
+build = [
+    "build",
+    "commitizen",
+    "twine",
+]
 
 [project.scripts]
 bm = "bm.cli:main"
