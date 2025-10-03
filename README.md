@@ -294,6 +294,42 @@ bm list --jsonl | fzf --with-nth=2.. | awk '{print $1}' | xargs -r bm open
 bm list --host example.com --jsonl | head -1 | jq -r '.id' | xargs -r bm open
 ```
 
+**Rofi launcher**
+
+```bash
+#!/bin/sh
+choice="$(
+    bm list --jsonl |
+    jq -r '.id + "\t" + .title + " — " + .url' |
+    rofi -dmenu -i -p "bm"
+)"
+if [ -n "$choice" ]; then
+    bm open "$(printf "%s" "$choice" | cut -f1)"
+fi
+```
+
+Save as `bm-rofi.sh`, make it executable (`chmod +x bm-rofi.sh`), and bind it to a hotkey. The
+tab delimiter keeps IDs intact even when titles contain spaces; rofi shows the full title and URL
+while `bm open` receives only the bookmark ID.
+
+**dmenu launcher**
+
+```bash
+#!/bin/sh
+choice="$(
+    bm list --jsonl |
+    jq -r '.id + "\t" + .title + " — " + .url' |
+    dmenu -l 15 -i -p "bm"
+)"
+if [ -n "$choice" ]; then
+    bm open "$(printf "%s" "$choice" | cut -f1)"
+fi
+```
+
+You can adjust `-l 15` to change the number of visible rows. Because the script uses tabs between
+the ID and the description, `cut -f1` reliably extracts the ID even when titles or URLs contain
+spaces.
+
 **Bulk tag HN links**
 
 ```bash
