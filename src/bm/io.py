@@ -61,19 +61,51 @@ def _parse_no_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
 
 
 def _parse_header(header: str) -> Dict[str, Any]:
-    meta = {}
-    for raw in header.splitlines():
+    meta: Dict[str, Any] = {}
+    lines = header.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         line = raw.strip()
-        if not line or line.startswith("#"):  # allow comments
+        if not line or line.startswith("#"):
+            i += 1
             continue
-        if ":" in line:
-            k, v = line.split(":", 1)
-            k = k.strip().lower()
-            v = v.strip()
-            if k == "tags":
-                meta["tags"] = _parse_tags(v)
-            else:
-                meta[k] = v
+
+        if ":" not in line:
+            i += 1
+            continue
+
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+
+        if value == "|":
+            i += 1
+            block: List[str] = []
+            while i < len(lines):
+                cont_raw = lines[i]
+                if not cont_raw.strip() and cont_raw.startswith(" "):
+                    block.append("")
+                    i += 1
+                    continue
+
+                indent_len = len(cont_raw) - len(cont_raw.lstrip())
+                if indent_len == 0:
+                    break
+
+                block.append(cont_raw[indent_len:])
+                i += 1
+
+            meta[key] = "\n".join(block)
+            continue
+
+        if key == "tags":
+            meta["tags"] = _parse_tags(value)
+        else:
+            meta[key] = value
+
+        i += 1
+
     return meta
 
 

@@ -182,6 +182,23 @@ tags: ["tag,with,comma", normal]
         assert meta == {"tags": []}
         assert body == text
 
+    def test_block_scalar_round_trip(self):
+        """Should reconstruct block scalars emitted by build_text."""
+        text = "\n".join(
+            [
+                "---",
+                "notes: |",
+                "  line1",
+                "  line2",
+                "  ",
+                "  line3",
+                "---",
+                "",
+            ]
+        )
+        meta, _ = parse_front_matter(text)
+        assert meta["notes"] == "line1\nline2\n\nline3"
+
 
 class TestFmtTag:
     """Test _fmt_tag function."""
