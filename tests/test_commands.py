@@ -1,5 +1,6 @@
 """Unit tests for bm.commands module."""
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1744,8 +1745,11 @@ class TestCmdSync:
         args.store = str(store)
 
         with patch("subprocess.run") as mock_run:
-            # Mock successful upstream check (return code 1 means no upstream)
-            mock_run.return_value.returncode = 1
+            mock_run.side_effect = [
+                MagicMock(returncode=0),  # git add
+                MagicMock(returncode=0),  # git commit
+                MagicMock(returncode=1),  # rev-parse -> no upstream
+            ]
             cmd_sync(args)
 
         # Should have called git add and git commit
@@ -1808,6 +1812,27 @@ class TestCmdSync:
         calls = mock_run.call_args_list
         assert len(calls) == 3
         assert all(call[0][0] != ["git", "push"] for call in calls)
+
+    def test_sync_surfaces_git_failure(self, tmp_path):
+        """Should exit if a git command fails."""
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / ".git").mkdir()
+
+        args = MagicMock()
+        args.store = str(store)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                returncode=5,
+                cmd=["git", "add", "-A"],
+            )
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_sync(args)
+
+        assert exc_info.value.code == 5
+        first_call = mock_run.call_args_list[0]
+        assert first_call[0][0] == ["git", "add", "-A"]
 
 
 class TestCmdTag:

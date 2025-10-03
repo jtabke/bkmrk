@@ -806,8 +806,18 @@ def cmd_sync(args) -> None:
     store = Path(args.store or DEFAULT_STORE)
     if not (store / ".git").exists():
         die("store is not a git repo; run: bm init --git", code=2)
-    subprocess.run(["git", "add", "-A"], cwd=store)
-    subprocess.run(["git", "commit", "-m", "bm sync", "--allow-empty"], cwd=store)
+
+    def run_git(cmd: List[str]) -> None:
+        try:
+            subprocess.run(cmd, cwd=store, check=True)
+        except subprocess.CalledProcessError as exc:
+            die(
+                f"git command failed ({' '.join(cmd)}): exit {exc.returncode}",
+                code=exc.returncode or 1,
+            )
+
+    run_git(["git", "add", "-A"])
+    run_git(["git", "commit", "-m", "bm sync", "--allow-empty"])
     # push only if upstream exists
     r = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
@@ -816,7 +826,7 @@ def cmd_sync(args) -> None:
         stderr=subprocess.DEVNULL,
     )
     if r.returncode == 0:
-        subprocess.run(["git", "push"], cwd=store)
+        run_git(["git", "push"])
 
 
 def find_candidates(store: Path, needle: str) -> List[Path]:
