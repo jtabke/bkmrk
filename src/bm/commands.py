@@ -524,7 +524,8 @@ def _write_merged_entry(
 ) -> None:
     merged_meta_for_write = dict(merged_meta)
     merged_meta_for_write["tags"] = tags
-    merged_meta_for_write["modified"] = iso_now()
+    if not merged_meta_for_write.get("modified"):
+        merged_meta_for_write["modified"] = iso_now()
     atomic_write(survivor["path"], build_text(merged_meta_for_write, merged_body))
     survivor["meta"] = merged_meta_for_write
     survivor["body"] = merged_body

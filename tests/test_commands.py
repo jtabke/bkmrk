@@ -1640,6 +1640,7 @@ Secondary notes
             "http://www.example.com:80/article?b=2&a=1",
         }
         assert meta["created"] == "2024-01-01T00:00:00+00:00"
+        assert meta["modified"] == "2024-03-01T00:00:00+00:00"
         assert meta["title"] in {"First title", "Second title"}
         assert meta["tags"] == ["alpha", "beta", "dev", "inbox"]
         assert "Primary notes" in body
