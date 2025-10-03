@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bkmrk"
-version = "0.2.0"
+version = "0.2.1"
 description = "Plain-text, pass-style bookmarks"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -59,7 +59,7 @@ python_functions = "test_*"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.0"
+version = "0.2.1"
 tag_format = "$version"
 version_files = ["pyproject.toml:version"]
 update_changelog_on_bump = true
