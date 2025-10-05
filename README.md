@@ -1,5 +1,7 @@
 # bm — plain‑text bookmarks
 
+[![Tests][tests-badge]][tests-workflow]
+
 A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `pass`:
 
 - **One text file per bookmark** (`.bm`) with front matter + freeform notes
@@ -429,3 +431,6 @@ pytest -q
 ## [ License ](./LICENSE)
 
 MIT. Do what you want; a credit is appreciated.
+
+[tests-badge]: https://github.com/jtabke/bkmrk/actions/workflows/tests.yml/badge.svg?branch=main
+[tests-workflow]: https://github.com/jtabke/bkmrk/actions/workflows/tests.yml
