@@ -63,6 +63,12 @@ Requires Python >=3.8. Install from PyPI:
 pip install bkmrk
 ```
 
+Alternatively, using uv (a fast Python package installer):
+
+```bash
+uv pip install bkmrk
+```
+
 For the latest development version, clone and install locally:
 
 ```bash
@@ -71,10 +77,24 @@ cd bkmrk
 python -m pip install .
 ```
 
+Or with uv:
+
+```bash
+git clone https://github.com/jtabke/bkmrk
+cd bkmrk
+uv pip install .
+```
+
 Development workflows can pull in the optional extras declared in `pyproject.toml`:
 
 ```bash
 python -m pip install -e '.[dev]'
+```
+
+Or with uv:
+
+```bash
+uv pip install -e '.[dev]'
 ```
 
 Prefer running straight from the repository? The module entry point works without
