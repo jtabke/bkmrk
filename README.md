@@ -423,12 +423,6 @@ Windows notes:
 
 ---
 
-## Migration notes
-
-From older versions where IDs depended on path: IDs are now **URL‑only** (stable across renames). Old files remain valid; tags as comma strings are still read and normalized to lists on save.
-
----
-
 ## Development
 
 ```bash
