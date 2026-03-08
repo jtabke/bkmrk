@@ -1,3 +1,19 @@
+## 0.2.2 (2026-03-08)
+
+### Fix
+
+- simplify import to accept file directly
+- sort JSON export rows by path for deterministic output
+- flatten host into filename instead of creating directory
+
+### Refactor
+
+- reuse existing helpers to reduce duplication
+
+### Perf
+
+- optimize hot paths and harden temp file handling
+
 ## 0.2.1 (2025-10-03)
 
 ### Fix
