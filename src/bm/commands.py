@@ -402,32 +402,13 @@ def cmd_search(args) -> None:
             ]
         ).lower()
         if all(term in blob for term in q.split()):
-            url = meta.get("url", "")
             ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-            hits.append(
-                {
-                    "id": rid(url),
-                    "path": str(rel),
-                    "title": meta.get("title", ""),
-                    "url": url,
-                    "tags": meta.get("tags", []),
-                    "created": meta.get("created", ""),
-                    "modified": meta.get("modified", ""),
-                    "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
-                }
-            )
+            hits.append(_build_row(rel, meta, ts))
     hits.sort(key=lambda r: r["_sort"], reverse=True)
     for r in hits:
         r.pop("_sort", None)
 
-    if args.json:
-        print(json.dumps(hits, ensure_ascii=False))
-    elif args.jsonl:
-        for r in hits:
-            print(json.dumps(r, ensure_ascii=False))
-    else:
-        for r in hits:
-            print(f"{r['id']}  {r['path']}")
+    _output_rows(hits, args)
 
 
 def cmd_edit(args) -> None:
@@ -451,11 +432,7 @@ def cmd_rm(args) -> None:
         die("not found")
     assert p is not None
     p.unlink()
-    # prune empty dirs
-    d = p.parent
-    while d != store and not any(d.iterdir()):
-        d.rmdir()
-        d = d.parent
+    _prune_empty_dirs(store, p.parent)
 
 
 def cmd_mv(args) -> None:
@@ -694,13 +671,8 @@ def cmd_export(args) -> None:
         want_host = (args.host or "").lower()
         entries = []
         for _, rel, meta, _ in _iter_entries(store):
-            if want_host:
-                host = urlparse(meta.get("url", "")).netloc.lower()
-                if host.startswith("www."):
-                    host = host[4:]
-                hq = want_host[4:] if want_host.startswith("www.") else want_host
-                if host != hq:
-                    continue
+            if not _matches_host(meta, want_host):
+                continue
             ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
             if since_dt and (not ts or ts < since_dt):
                 continue
@@ -759,8 +731,6 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
             add_date = re.search(r'\bADD_DATE="(\d+)"', line)
             if add_date:
                 try:
-                    from datetime import datetime, timezone
-
                     meta["created"] = datetime.fromtimestamp(
                         int(add_date.group(1)), tz=timezone.utc
                     ).isoformat()
