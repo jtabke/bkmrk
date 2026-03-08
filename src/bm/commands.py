@@ -694,6 +694,7 @@ def cmd_export(args) -> None:
                     "modified": meta.get("modified", ""),
                 }
             )
+        rows.sort(key=lambda r: r["path"])
         print(json.dumps(rows, ensure_ascii=False))
     else:
         die("unknown export format")
