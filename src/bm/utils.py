@@ -118,7 +118,7 @@ def create_slug_from_url(url: str) -> str:
         host = (p.netloc or "link").lower().replace("www.", "")
         host = host.replace(":", "-").replace(".", "-")
         last = p.path.strip("/").split("/")[-1] if p.path and p.path != "/" else ""
-        base = f"{host}/{last}" if last else host
+        base = f"{host}-{last}" if last else host
         base = normalize_slug(base)
     except Exception:
         base = normalize_slug(url.replace("://", "_").replace("/", "-"))
