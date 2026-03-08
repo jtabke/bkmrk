@@ -63,10 +63,10 @@ Requires Python >=3.8. Install from PyPI:
 pip install bkmrk
 ```
 
-Alternatively, using uv (a fast Python package installer):
+Alternatively, using uv to install system-wide as a tool:
 
 ```bash
-uv pip install bkmrk
+uv tool install bkmrk
 ```
 
 For the latest development version, clone and install locally:
