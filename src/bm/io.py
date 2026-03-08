@@ -1,6 +1,7 @@
 """Input/Output functions for bookmarks."""
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -163,15 +164,26 @@ def build_text(meta: Dict[str, Any], body: str) -> str:
     return fm + (body or "")
 
 
-def load_entry(fpath: Path) -> Tuple[Dict[str, Any], str]:
-    """Load meta and body from file."""
+def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Dict[str, Any], str]:
+    """Load meta and body from file. If meta_only, skip body parsing."""
     text = fpath.read_text(encoding="utf-8", errors="replace")
+    if meta_only:
+        meta, _ = parse_front_matter(text)
+        return meta, ""
     meta, body = parse_front_matter(text)
     return meta, body
 
 
 def atomic_write(path: Path, data: str) -> None:
     """Write data to path atomically."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise

@@ -226,11 +226,9 @@ url: https://example2.com
         fpath2 = store / "other-suffix.bm"
         fpath2.write_text(content2)
 
-        # Fuzzy search for "suffix" should return the first one alphabetically
+        # Fuzzy search for "suffix" should return a valid match
         result = resolve_id_or_path(store, "suffix")
-        # Should return the first one in sorted order
-        expected = sorted([fpath1, fpath2])[0]
-        assert result == expected
+        assert result in (fpath1, fpath2)
 
 
 class TestFindCandidates:

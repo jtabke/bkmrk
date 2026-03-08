@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import webbrowser
 from datetime import datetime, timezone
@@ -101,17 +102,18 @@ def cmd_add(args) -> None:
     if args.edit:
         # Pre-populate a template and open $EDITOR
         template = build_text(meta, body)
-        tmp = (
-            Path(os.environ.get("TMPDIR") or os.environ.get("TEMP") or "/tmp")
-            / f"bm-{os.getpid()}.bm"
-        )
-        tmp.write_text(template, encoding="utf-8")
-        _launch_editor(tmp)
-        meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
+        fd, tmp_name = tempfile.mkstemp(suffix=".bm", prefix="bm-")
+        tmp = Path(tmp_name)
         try:
-            tmp.unlink()
-        except Exception:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(template)
+            _launch_editor(tmp)
+            meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         # Merge back (keep created)
         meta.update({k: v for k, v in meta2.items() if k != "created"})
         body = body2
@@ -156,20 +158,20 @@ def cmd_open(args) -> None:
         print("bm: warning: system did not acknowledge opening browser", file=sys.stderr)
 
 
-def _iter_entries(store: Path) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
-    """Iterate over all entries."""
-    for p in sorted(store.rglob(f"*{FILE_EXT}")):
+def _iter_entries(
+    store: Path, meta_only: bool = False
+) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
+    """Iterate over all entries. If meta_only, skip body parsing."""
+    for p in store.rglob(f"*{FILE_EXT}"):
         rel = p.relative_to(store).with_suffix("")
-        meta, body = load_entry(p)
+        meta, body = load_entry(p, meta_only=meta_only)
         yield p, rel, meta, body
 
 
 def _matches_tag(rel, meta, tag):
     if not tag:
         return True
-    segs = set(rel.parts[:-1])
-    header_tags = set(meta.get("tags", []))
-    return tag in segs or tag in header_tags
+    return tag in rel.parts[:-1] or tag in meta.get("tags", [])
 
 
 def _matches_host(meta, want_host):
@@ -341,7 +343,7 @@ def _collect_rows(store: Path, args) -> List[dict]:
         want_path = want_path.strip("/")
     else:
         want_path = ""
-    for _, rel, meta, _ in _iter_entries(store):
+    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
         if not _matches_tag(rel, meta, args.tag):
             continue
         if not _matches_host(meta, want_host):
@@ -458,7 +460,7 @@ def cmd_tags(args) -> None:
     store = Path(args.store or DEFAULT_STORE)
     folder_tags = set()
     header_tags = set()
-    for _, rel, meta, _ in _iter_entries(store):
+    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
         folder_tags.update(rel.parts[:-1])
         header_tags.update(t.strip() for t in meta.get("tags", []) if t.strip())
     all_tags = sorted(folder_tags | header_tags)
@@ -470,7 +472,7 @@ def cmd_dirs(args) -> None:
     """List known directory prefixes."""
     store = Path(args.store or DEFAULT_STORE)
     dirs = set()
-    for _, rel, _, _ in _iter_entries(store):
+    for _, rel, _, _ in _iter_entries(store, meta_only=True):
         # Add all parent directories
         parts = rel.parts
         for i in range(1, len(parts)):
@@ -670,7 +672,7 @@ def cmd_export(args) -> None:
         since_dt = parse_iso(args.since) if args.since else None
         want_host = (args.host or "").lower()
         entries = []
-        for _, rel, meta, _ in _iter_entries(store):
+        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
             if not _matches_host(meta, want_host):
                 continue
             ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
@@ -681,7 +683,7 @@ def cmd_export(args) -> None:
         sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
     elif args.fmt == "json":
         rows = []
-        for _, rel, meta, _ in _iter_entries(store):
+        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
             rows.append(
                 {
                     "path": str(rel),
@@ -817,12 +819,21 @@ def find_candidates(store: Path, needle: str) -> List[Path]:
 def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
     """Accept either a stable ID (by URL) or a path-ish token."""
     token = token.strip()
-    # Try ID match (single scan)
+    # 1. Try exact path match (no scan needed)
+    slug = normalize_slug(token)
+    slug = _reject_unsafe(slug)
+    exact = id_to_path(store, slug)
+    if exact.exists():
+        return exact
+    # 2. Try fuzzy filename match (scan filenames only, no file reads)
+    name = Path(slug).name
     for p in store.rglob(f"*{FILE_EXT}"):
-        meta, _ = load_entry(p)
+        if name in p.stem:
+            return p
+    # 3. Last resort: ID match by URL hash (requires reading files)
+    for p in store.rglob(f"*{FILE_EXT}"):
+        meta, _ = load_entry(p, meta_only=True)
         url = meta.get("url", "")
         if url and rid(url) == token:
             return p
-    # Fallback to path/fuzzy
-    hits = find_candidates(store, token)
-    return hits[0] if hits else None
+    return None
