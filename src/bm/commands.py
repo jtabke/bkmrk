@@ -755,23 +755,20 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def cmd_import(args) -> None:
-    """Import bookmarks."""
+    """Import bookmarks from Netscape HTML."""
     store = Path(args.store or DEFAULT_STORE)
     store.mkdir(parents=True, exist_ok=True)
-    if args.fmt == "netscape":
-        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
-        entries = _parse_netscape_html(text)
-        for path, meta in entries:
-            slug = create_slug_from_url(meta["url"])
-            full_path = f"{path}/{slug}" if path else slug
-            fpath = id_to_path(store, full_path)
-            if fpath.exists() and not args.force:
-                continue
-            fpath.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(fpath, build_text(meta, ""))
-        print("import ok")
-    else:
-        die("unknown import format")
+    text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+    entries = _parse_netscape_html(text)
+    for path, meta in entries:
+        slug = create_slug_from_url(meta["url"])
+        full_path = f"{path}/{slug}" if path else slug
+        fpath = id_to_path(store, full_path)
+        if fpath.exists() and not args.force:
+            continue
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(fpath, build_text(meta, ""))
+    print("import ok")
 
 
 def cmd_sync(args) -> None:

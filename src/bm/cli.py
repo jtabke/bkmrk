@@ -112,11 +112,9 @@ def main() -> None:
     pj.set_defaults(func=cmd_export)
 
     p = sp.add_parser("import", help="Import bookmarks")
-    spm = p.add_subparsers(dest="fmt", required=True)
-    pn = spm.add_parser("netscape", help="Import from Netscape bookmarks HTML")
-    pn.add_argument("file")
-    pn.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
-    pn.set_defaults(func=cmd_import)
+    p.add_argument("file")
+    p.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
+    p.set_defaults(func=cmd_import)
 
     p = sp.add_parser("sync", help="git add/commit/push if repo")
     p.set_defaults(func=cmd_sync)
