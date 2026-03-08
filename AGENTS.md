@@ -7,7 +7,7 @@
 - **Format**: `ruff format .`
 - **Test all**: `pytest`
 - **Test single**: `pytest tests/test_file.py::TestClass::test_method`
-- **Pre-commit**: `pre-commit run --all-files`
+- **Pre-commit**: `prek run --all-files`
 - **Version bump**: `cz bump`
 - **Generate changelog**: `cz changelog`
 - **Release**: `cz bump --changelog && git push --tags`
