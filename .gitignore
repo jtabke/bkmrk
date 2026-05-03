@@ -191,6 +191,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Mutmut generated working tree
+mutants/
+
 # PyPI configuration file
 .pypirc
 

@@ -98,6 +98,11 @@ def test_module_entry_point_runs():
     import subprocess
     import sys as _sys
 
+    # Mutmut's stats collector breaks subprocess Python tracing
+    # (`max_stack_depth` AttributeError). Skip when running under mutmut.
+    if "mutants" in os.getcwd():
+        pytest.skip("incompatible with mutmut subprocess wrapping")
+
     import bm
 
     # Make `bm` importable in the subprocess by pointing at the package's parent dir.

@@ -24,6 +24,7 @@ completion = [
 dev = [
     "argcomplete>=3",
     "commitizen",
+    "mutmut",
     "prek",
     "pytest-cov",
     "pytest>=7.0",
@@ -44,6 +45,7 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py38"
+extend-exclude = ["mutants"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I"]
@@ -67,3 +69,9 @@ version = "0.2.2"
 tag_format = "$version"
 version_files = ["pyproject.toml:version"]
 update_changelog_on_bump = true
+
+[tool.mutmut]
+paths_to_mutate = ["src/bm/"]
+tests_dir = ["tests"]
+runner = ".venv/bin/python -m pytest -x -q -k 'not test_module_entry_point_runs'"
+do_not_mutate = ["src/bm/__init__.py", "src/bm/__main__.py"]
