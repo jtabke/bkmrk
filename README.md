@@ -36,6 +36,7 @@ A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `
   - [`edit`, `rm`, `mv`](#edit-rm-mv)
   - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
   - [`dirs`](#dirs)
+  - [`dedupe`](#dedupe)
   - [`export` and `import`](#export-and-import)
   - [`sync`](#sync)
 
@@ -43,7 +44,6 @@ A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `
 - [Integration recipes](#integration-recipes)
 - [Configuration](#configuration)
 - [Security & robustness](#security--robustness)
-- [Migration notes](#migration-notes)
 - [Development](#development)
 - [License](#license)
 
@@ -119,7 +119,7 @@ python -m bm --help
 bm init --git
 
 # import bookmarks from a browser export (Netscape HTML)
-bm import netscape ~/Downloads/bookmarks.html
+bm import ~/Downloads/bookmarks.html
 
 # add a bookmark
 bm add https://example.com -n "Example" -t ref,demo -d "Short note"
@@ -217,11 +217,15 @@ bm list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|
 
 ### `search`
 
-Full‑text search across title, url, tags, and body.
+Default semantics: case‑insensitive substring **AND** across title, url, tags, and body. Each whitespace‑separated word in the query must appear somewhere; quote phrases at the shell level if you need a single token.
 
 ```bash
-bm search <query> [--path PREFIX] [--json|--jsonl]
+bm search <query> [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--regex] [--field FIELD] [--json|--jsonl]
 ```
+
+- `--regex` treats the query as a Python regex (case‑insensitive).
+- `--field {title,url,tags,body}` restricts the scope; repeat to search multiple fields.
+- Exits **0** when at least one match is printed, **1** when there are no matches (so `bm search foo && open …` works as expected).
 
 ### `show` and `open`
 
@@ -276,9 +280,9 @@ bm dedupe [--dry-run] [--json]
 Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
 
 ```bash
-bm export netscape [--host HOST] [--since ISO|YYYY-MM-DD] > bookmarks.html
-bm export json > dump.json
-bm import netscape bookmarks.html [-f]
+bm export netscape [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] > bookmarks.html
+bm export json [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--jsonl] > dump.json
+bm import bookmarks.html [-f]
 ```
 
 ### `sync`
@@ -407,6 +411,8 @@ Run this script periodically or on demand to generate an up-to-date bookmark fil
 
 - **Store directory**: set `BOOKMARKS_DIR` or pass `--store` to any command
 - **Editor**: `VISUAL` or `EDITOR` (supports commands like `code --wait`)
+- **Debug**: set `BM_DEBUG=1` to re-raise unexpected exceptions with a full traceback (otherwise printed as a one-line `bm: <Type>: <msg>` to stderr with exit code 2)
+- **Shell completion**: install the `completion` extra (`pip install 'bkmrk[completion]'`) for [argcomplete](https://github.com/kislyuk/argcomplete). Then enable global completion (`activate-global-python-argcomplete`) or wire it per‑shell with `eval "$(register-python-argcomplete bm)"`.
 
 Windows notes:
 
@@ -442,7 +448,9 @@ pytest -q
 
 ---
 
-## [ License ](./LICENSE)
+## License
+
+See [LICENSE](./LICENSE).
 
 MIT. Do what you want; a credit is appreciated.
 
