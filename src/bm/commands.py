@@ -225,7 +225,7 @@ def _matches_since(meta, since_dt):
     if not since_dt:
         return True
     ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-    return ts and ts >= since_dt
+    return bool(ts and ts >= since_dt)
 
 
 def _matches_path(rel, path_prefix):
