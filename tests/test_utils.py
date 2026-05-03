@@ -141,6 +141,21 @@ class TestNormalizeSlug:
         with pytest.raises(SystemExit):
             _reject_unsafe("/absolute/path")
 
+    def test_reject_all_dots_segment(self):
+        """Should reject any segment that is entirely dots."""
+        for s in ["...", "....", "a/.../b"]:
+            with pytest.raises(SystemExit):
+                _reject_unsafe(s)
+
+    def test_reject_null_byte(self):
+        """Should reject NUL byte in any segment."""
+        with pytest.raises(SystemExit):
+            _reject_unsafe("a/b\x00c")
+
+    def test_accept_leading_dot_segment(self):
+        """Single-dot prefix segments (e.g. .git) are accepted."""
+        assert _reject_unsafe(".git/config") == ".git/config"
+
     def test_normalize_slug_collapse_multiple_dashes(self):
         """Should collapse multiple consecutive dashes."""
         assert normalize_slug("hello---world") == "hello-world"

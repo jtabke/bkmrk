@@ -81,12 +81,21 @@ def normalize_slug(s: str) -> str:
 
 
 def _reject_unsafe(rel: str) -> str:
-    """Reject unsafe path segments."""
-    parts = [p for p in rel.split("/") if p]
-    if any(p == ".." for p in parts):
-        die("unsafe path segment '..' not allowed")
+    """Reject unsafe path segments.
+
+    Rejects: absolute paths, any all-dots segment ('..', '...', etc.), and
+    NUL bytes. Leading-dot segments like '.git' are accepted (caller may need
+    them); all-dots are blocked because they enable parent traversal or
+    upload to ambiguous filesystem locations.
+    """
+    if "\x00" in rel:
+        die("null byte in path not allowed")
     if rel.startswith("/"):
         die("absolute paths not allowed")
+    parts = [p for p in rel.split("/") if p]
+    for p in parts:
+        if p and set(p) == {"."}:
+            die(f"unsafe path segment {p!r} not allowed")
     return "/".join(parts)
 
 
@@ -100,10 +109,13 @@ def is_relative_to(path: Path, base: Path) -> bool:
 
 
 def id_to_path(store: Path, slug: str) -> Path:
-    """Convert slug to path."""
+    """Convert slug to a store-relative path; rejects escapes."""
     slug = normalize_slug(slug)
     slug = _reject_unsafe(slug)
-    return store / (slug + FILE_EXT)
+    fpath = store / (slug + FILE_EXT)
+    if not is_relative_to(fpath, store):
+        die("destination escapes store")
+    return fpath
 
 
 def _short_sha(s: str) -> str:
