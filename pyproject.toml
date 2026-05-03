@@ -18,7 +18,11 @@ keywords = ["bookmarks", "bm", "bkmrk", "Plain-text bookmarks"]
 dependencies = []
 
 [project.optional-dependencies]
+completion = [
+    "argcomplete>=3",
+]
 dev = [
+    "argcomplete>=3",
     "commitizen",
     "prek",
     "pytest-cov",

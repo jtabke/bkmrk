@@ -58,3 +58,58 @@ class TestMain:
         assert e.value.code != 0
         captured = capsys.readouterr()
         assert "nope" in captured.out or "nope" in captured.err
+
+    @patch("bm.cli.cmd_list", side_effect=KeyboardInterrupt)
+    def test_keyboard_interrupt_exits_130(self, _mock):
+        with patch("sys.argv", ["bm", "list"]):
+            with pytest.raises(SystemExit) as e:
+                main()
+        assert e.value.code == 130
+
+    @patch("bm.cli.cmd_list", side_effect=BrokenPipeError)
+    def test_broken_pipe_exits_zero(self, _mock):
+        with patch("sys.argv", ["bm", "list"]):
+            with pytest.raises(SystemExit) as e:
+                main()
+        assert e.value.code == 0
+
+    @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
+    def test_unexpected_exception_exits_2(self, _mock, capsys):
+        with patch("sys.argv", ["bm", "list"]):
+            with pytest.raises(SystemExit) as e:
+                main()
+        assert e.value.code == 2
+        captured = capsys.readouterr()
+        assert "RuntimeError" in captured.err
+        assert "boom" in captured.err
+
+    @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
+    def test_bm_debug_re_raises(self, _mock):
+        with patch("sys.argv", ["bm", "list"]), patch.dict(
+            "os.environ", {"BM_DEBUG": "1"}, clear=False
+        ):
+            with pytest.raises(RuntimeError):
+                main()
+
+
+def test_module_entry_point_runs():
+    """`python -m bm --help` should print usage cleanly."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    import bm
+
+    # Make `bm` importable in the subprocess by pointing at the package's parent dir.
+    pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(bm.__file__)))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = pkg_parent + os.pathsep + env.get("PYTHONPATH", "")
+
+    result = subprocess.run(
+        [_sys.executable, "-m", "bm", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0
+    assert "usage:" in result.stdout

@@ -1,6 +1,9 @@
 """Command line interface for the bookmark manager."""
 
+# PYTHON_ARGCOMPLETE_OK
 import argparse
+import os
+import sys
 
 from .commands import (
     cmd_add,
@@ -20,6 +23,14 @@ from .commands import (
     cmd_tag,
     cmd_tags,
 )
+
+
+def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
+    """Attach the standard filter flags (tag/host/since/path) to a subparser."""
+    parser.add_argument("-t", "--tag", help="Filter by tag (folder segment or header tag)")
+    parser.add_argument("--host", help="Filter by URL host (exact, 'www.' ignored)")
+    parser.add_argument("--since", help="ISO date/time or YYYY-MM-DD (lower bound)")
+    parser.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
 
 
 def main() -> None:
@@ -52,20 +63,41 @@ def main() -> None:
 
     p = sp.add_parser("open", help="Open in browser")
     p.add_argument("id", help="Stable ID or path/slug")
+    p.add_argument(
+        "--allow-scheme",
+        action="store_true",
+        help="Open URL even when its scheme is outside the safe allow-list",
+    )
     p.set_defaults(func=cmd_open)
 
     p = sp.add_parser("list", help="List all entries")
-    p.add_argument("-t", "--tag", help="Filter by tag (folder segment or header tag)")
-    p.add_argument("--host", help="Filter by URL host (exact, 'www.' ignored)")
-    p.add_argument("--since", help="ISO date/time or YYYY-MM-DD (lower bound)")
-    p.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
+    _add_filter_flags(p)
     p.add_argument("--json", action="store_true", help="Emit JSON array")
     p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_list)
 
-    p = sp.add_parser("search", help="Full-text search over title/url/tags/body")
+    p = sp.add_parser(
+        "search",
+        help="Substring-AND search across title/url/tags/body (or --regex)",
+        description=(
+            "Default: case-insensitive substring AND across all four fields. "
+            "Use --regex for a Python regex (case-insensitive); --field to scope. "
+            "Exits 1 when no entries match."
+        ),
+    )
     p.add_argument("query")
-    p.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
+    _add_filter_flags(p)
+    p.add_argument(
+        "--regex",
+        action="store_true",
+        help="Treat query as a case-insensitive Python regex",
+    )
+    p.add_argument(
+        "--field",
+        action="append",
+        choices=["title", "url", "tags", "body"],
+        help="Restrict search to a field (repeatable; default: all four)",
+    )
     p.add_argument("--json", action="store_true", help="Emit JSON array")
     p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_search)
@@ -105,10 +137,15 @@ def main() -> None:
     p = sp.add_parser("export", help="Export bookmarks")
     spx = p.add_subparsers(dest="fmt", required=True)
     pe = spx.add_parser("netscape", help="Export as Netscape bookmarks HTML")
-    pe.add_argument("--host", help="Filter by URL host")
-    pe.add_argument("--since", help="ISO date/time or YYYY-MM-DD lower bound")
+    _add_filter_flags(pe)
     pe.set_defaults(func=cmd_export)
     pj = spx.add_parser("json", help="Export as JSON array")
+    _add_filter_flags(pj)
+    pj.add_argument(
+        "--jsonl",
+        action="store_true",
+        help="Stream JSON Lines (NDJSON) instead of a single sorted array",
+    )
     pj.set_defaults(func=cmd_export)
 
     p = sp.add_parser("import", help="Import bookmarks")
@@ -119,5 +156,26 @@ def main() -> None:
     p = sp.add_parser("sync", help="git add/commit/push if repo")
     p.set_defaults(func=cmd_sync)
 
+    # Optional shell completion (no hard dependency).
+    try:
+        import argcomplete
+    except ImportError:
+        pass
+    else:
+        argcomplete.autocomplete(ap)
+
     args = ap.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        # Downstream pipe closed (e.g. `bm list | head`). Quiet success.
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        if os.environ.get("BM_DEBUG"):
+            raise
+        print(f"bm: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(2)
