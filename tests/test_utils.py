@@ -6,6 +6,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from bm.utils import (
+    _normalize_netloc_for_compare,
+    _normalize_path_for_compare,
+    _normalize_query_string,
+    _parse_for_compare,
     _reject_unsafe,
     create_slug_from_url,
     id_to_path,
@@ -185,18 +189,110 @@ class TestNormalizeUrlForCompare:
         assert normalized == normalize_url_for_compare(url2)
         assert normalized == "example.com/foo/bar?a=1&b=2"
 
+    def test_empty_url_normalizes_to_empty(self):
+        """Empty URLs should produce an empty dedupe key."""
+        assert normalize_url_for_compare("") == ""
+        assert normalize_url_for_compare("   ") == ""
+
     def test_missing_scheme(self):
-        """Should treat schemeless host paths as HTTP."""
+        """Should treat schemeless host paths as HTTP when a host is present."""
         assert normalize_url_for_compare("example.com/path") == "example.com/path"
+
+    def test_non_host_schemeless_values_preserve_raw_lowercase(self):
+        """Schemeless values without a host should use the raw text as their key."""
+        assert normalize_url_for_compare("?A=1") == "?a=1"
+        assert normalize_url_for_compare("/Local/Path") == "/local/path"
 
     def test_preserves_non_http_scheme(self):
         """Should keep non web schemes intact."""
         assert normalize_url_for_compare("mailto:user@example.com") == "mailto:user@example.com"
+        assert normalize_url_for_compare("mailto:user@example.com?subject=Hi") == (
+            "mailto:user@example.com?subject=Hi"
+        )
+
+    def test_web_path_params_are_preserved(self):
+        """URL params should remain attached to the normalized web path."""
+        result = normalize_url_for_compare("http://example.com/path;param?x=1")
+        assert result == "example.com/path;param?x=1"
 
     def test_default_https_port_removed(self):
         """Should drop default HTTPS port."""
         result = normalize_url_for_compare("https://example.com:443/foo")
         assert result == "example.com/foo"
+
+    def test_userinfo_is_lowered_and_preserved(self):
+        """Userinfo should be split from host and normalized separately."""
+        result = normalize_url_for_compare("https://User:Pass@www.Example.com:443/a")
+        assert result == "user:pass@example.com/a"
+
+    def test_multiple_at_signs_split_on_last_at(self):
+        """Only the last @ separates userinfo from host."""
+        result = normalize_url_for_compare("https://one@two@example.com/a")
+        assert result == "one@two@example.com/a"
+
+    def test_non_default_web_ports_are_preserved(self):
+        """Only scheme-appropriate default ports should be removed."""
+        assert normalize_url_for_compare("https://example.com:80/a") == "example.com:80/a"
+        assert normalize_url_for_compare("http://example.com:443/a") == "example.com:443/a"
+        assert normalize_url_for_compare("ftp://example.com:443/a") == "ftp://example.com:443/a"
+
+    def test_invalid_port_keeps_raw_host_port(self):
+        """Unparseable ports should not drop the host/port text."""
+        result = normalize_url_for_compare("http://example.com:notaport/a")
+        assert result == "example.com:notaport/a"
+
+
+class TestUrlCompareHelpers:
+    """Direct tests for URL normalization helpers targeted by mutation testing."""
+
+    def test_normalize_netloc_empty_and_strips_whitespace(self):
+        assert _normalize_netloc_for_compare("http", "") == ""
+        assert _normalize_netloc_for_compare("http", "  EXAMPLE.com  ") == "example.com"
+
+    def test_normalize_netloc_userinfo_and_ports(self):
+        assert _normalize_netloc_for_compare("https", "User@www.Example.com:443") == (
+            "user@example.com"
+        )
+        assert _normalize_netloc_for_compare("http", "example.com:80") == "example.com"
+        assert _normalize_netloc_for_compare("", "example.com:80") == "example.com"
+        assert _normalize_netloc_for_compare("https", "example.com:80") == "example.com:80"
+        assert _normalize_netloc_for_compare("http", "example.com:foo:80") == "example.com:foo"
+        assert _normalize_netloc_for_compare("http", "one@www.example.com@Host.com") == (
+            "one@www.example.com@host.com"
+        )
+
+    def test_normalize_path_for_compare(self):
+        assert _normalize_path_for_compare("") == ""
+        assert _normalize_path_for_compare("foo//bar/../baz/") == "/foo/baz"
+        assert _normalize_path_for_compare("XX/XXfoo") == "/XX/XXfoo"
+        assert _normalize_path_for_compare("/") == ""
+        assert _normalize_path_for_compare(".") == ""
+
+    def test_parse_for_compare(self):
+        parsed, scheme = _parse_for_compare("example.com/path")
+        assert parsed.netloc == "example.com"
+        assert scheme == "http"
+
+        parsed, scheme = _parse_for_compare("MAILTO:User@Example.com")
+        assert parsed.scheme == "mailto"
+        assert scheme == "mailto"
+
+        parsed, scheme = _parse_for_compare("http://")
+        assert parsed.scheme == "http"
+        assert scheme == "http"
+
+        parsed, scheme = _parse_for_compare("://bad")
+        assert parsed.path == "://bad"
+        assert scheme == ""
+
+        parsed, scheme = _parse_for_compare("")
+        assert parsed.path == ""
+        assert scheme == ""
+
+    def test_normalize_query_string_keeps_blanks_and_sorts(self):
+        assert _normalize_query_string("") == ""
+        assert _normalize_query_string("b=&a=1") == "a=1&b="
+        assert _normalize_query_string("&&") == ""
 
 
 class TestRejectUnsafe:
@@ -258,13 +354,19 @@ class TestCreateSlugFromUrl:
     def test_no_path(self):
         """Should handle URL without path."""
         slug = create_slug_from_url("https://example.com")
-        assert "example-com" in slug
+        assert slug.startswith("example-com-")
+        assert "xxxx" not in slug
 
     def test_url_with_path(self):
-        """Should include path in slug."""
+        """Should include the final path segment in slug."""
         slug = create_slug_from_url("https://example.com/path/to/page")
-        assert "example-com" in slug
-        assert "path" in slug or "page" in slug
+        assert slug.startswith("example-com-page-")
+
+    def test_nested_path_uses_only_final_segment(self):
+        """Intermediate path segments should not be embedded in generated slugs."""
+        slug = create_slug_from_url("https://example.com/foo/bar")
+        assert slug.startswith("example-com-bar-")
+        assert "/" not in slug
 
     def test_unicode_url(self):
         """Should handle unicode characters in URL."""
@@ -277,6 +379,45 @@ class TestCreateSlugFromUrl:
         """Should handle URLs with query parameters."""
         slug = create_slug_from_url("https://example.com/path?query=value")
         assert "example-com" in slug
+
+    def test_slug_is_lowercase(self):
+        """Host portion of the slug must be lowercase."""
+        slug = create_slug_from_url("https://EXAMPLE.com/Path")
+        # Hash suffix is hex (lowercase). Whole slug should match the lower form.
+        assert slug == slug.lower()
+
+    def test_www_prefix_stripped(self):
+        """`www.` prefix should not appear in the slug."""
+        slug = create_slug_from_url("https://www.example.com")
+        assert slug.startswith("example-com-")
+        assert "www-" not in slug
+
+    def test_no_netloc_falls_back_to_link(self):
+        """Schemeless / no-host URLs should fall back to the literal `link`."""
+        slug = create_slug_from_url("just-some-text")
+        assert slug.startswith("link-") or slug.startswith("link")
+
+    def test_path_segment_split_on_slash_only(self):
+        """Path segmentation must split on '/' specifically (not whitespace)."""
+        # Whitespace in the path should remain inside the last segment, then be
+        # slug-normalized to a dash. If split(None) is used, only "bar" remains.
+        slug = create_slug_from_url("https://example.com/foo bar")
+        assert slug.startswith("example-com-foo-bar-")
+
+    def test_path_trailing_slash_uses_last_non_empty_segment(self):
+        """Trailing slashes should be stripped before selecting the final path segment."""
+        slug = create_slug_from_url("https://example.com/foo/")
+        assert slug.startswith("example-com-foo-")
+
+    def test_path_strip_preserves_non_slash_edge_characters(self):
+        """Only slashes should be stripped from path edges before segment selection."""
+        slug = create_slug_from_url("https://example.com/XrayX/")
+        assert slug.startswith("example-com-xrayx-")
+
+    def test_colon_in_host_port_becomes_segment_dash(self):
+        """Host ports should keep a dash separator rather than being concatenated."""
+        slug = create_slug_from_url("https://example.com:8443/path")
+        assert slug.startswith("example-com-8443-path-")
 
 
 class TestRid:
