@@ -199,6 +199,80 @@ tags: ["tag,with,comma", normal]
         meta, _ = parse_front_matter(text)
         assert meta["notes"] == "line1\nline2\n\nline3"
 
+    def test_block_scalar_truly_empty_blank_line(self):
+        """Should preserve blank lines that have no whitespace at all."""
+        text = "\n".join(
+            [
+                "---",
+                "notes: |",
+                "  line1",
+                "",
+                "  line3",
+                "---",
+                "",
+            ]
+        )
+        meta, _ = parse_front_matter(text)
+        assert meta["notes"] == "line1\n\nline3"
+
+    def test_load_entry_meta_only_does_not_read_body(self, tmp_path):
+        """meta_only must early-exit at the second '---' marker."""
+        from bm.io import load_entry
+
+        fpath = tmp_path / "x.bm"
+        # Body is much larger than the chunk size to ensure early-exit fires.
+        body = "x" * (8192 * 4)
+        fpath.write_text(
+            f"---\nurl: https://e.example.com\ntitle: T\n---\n{body}",
+            encoding="utf-8",
+        )
+        meta, body_out = load_entry(fpath, meta_only=True)
+        assert meta["url"] == "https://e.example.com"
+        assert meta["title"] == "T"
+        assert body_out == ""
+
+    def test_atomic_write_refuses_symlink_dest(self, tmp_path):
+        """atomic_write must refuse to follow a symlink at the destination."""
+        from bm.io import atomic_write
+
+        target = tmp_path / "outside.txt"
+        target.write_text("untouched")
+        link = tmp_path / "link.bm"
+        link.symlink_to(target)
+
+        with pytest.raises(OSError):
+            atomic_write(link, "new content")
+
+        assert target.read_text() == "untouched"
+        assert link.is_symlink()
+
+    def test_load_entry_meta_only_no_front_matter(self, tmp_path):
+        """meta_only on a body-only file must still parse without error."""
+        from bm.io import load_entry
+
+        fpath = tmp_path / "x.bm"
+        fpath.write_text("https://e.example.com\nfree-form notes\n", encoding="utf-8")
+        meta, body_out = load_entry(fpath, meta_only=True)
+        assert meta.get("url") == "https://e.example.com"
+        assert body_out == ""
+
+    def test_block_scalar_drops_trailing_blanks(self):
+        """Should drop trailing blanks before next key / front-matter end."""
+        text = "\n".join(
+            [
+                "---",
+                "notes: |",
+                "  body",
+                "",
+                "title: T",
+                "---",
+                "",
+            ]
+        )
+        meta, _ = parse_front_matter(text)
+        assert meta["notes"] == "body"
+        assert meta["title"] == "T"
+
 
 class TestFmtTag:
     """Test _fmt_tag function."""
