@@ -4,7 +4,6 @@ import html
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,7 +22,6 @@ from .utils import (
     create_slug_from_url,
     die,
     id_to_path,
-    is_relative_to,
     iso_now,
     normalize_slug,
     normalize_url_for_compare,
@@ -31,6 +29,23 @@ from .utils import (
     rid,
     to_epoch,
 )
+
+ALLOWED_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps", "mailto"})
+
+_PROGRESS_EVERY = 500
+
+
+def _progress_tick(label: str, count: int) -> None:
+    """Emit a TTY-only progress line on stderr every _PROGRESS_EVERY items."""
+    if count and count % _PROGRESS_EVERY == 0 and sys.stderr.isatty():
+        sys.stderr.write(f"\rbm: {label}: {count}")
+        sys.stderr.flush()
+
+
+def _progress_done(label: str, count: int) -> None:
+    if count >= _PROGRESS_EVERY and sys.stderr.isatty():
+        sys.stderr.write(f"\rbm: {label}: {count} (done)\n")
+        sys.stderr.flush()
 
 
 def cmd_init(args) -> None:
@@ -42,13 +57,13 @@ def cmd_init(args) -> None:
         args: Parsed command line arguments.
     """
     store = Path(args.store or DEFAULT_STORE)
-    store.mkdir(parents=True, exist_ok=True)
+    store.mkdir(parents=True, exist_ok=True, mode=0o700)
     print(f"Initialized store at: {store}")
     if args.git:
         if (store / ".git").exists():
             print("Git repo already exists.")
         else:
-            subprocess.run(["git", "init"], cwd=store)
+            subprocess.run(_git_cmd("init"), cwd=store)
             print("Initialized git repository.")
     readme = store / "README.txt"
     if not readme.exists():
@@ -70,6 +85,10 @@ def cmd_init(args) -> None:
         """),
             encoding="utf-8",
         )
+        try:
+            os.chmod(readme, 0o600)
+        except OSError:
+            pass
 
 
 def cmd_add(args) -> None:
@@ -83,11 +102,9 @@ def cmd_add(args) -> None:
         slug = f"{normalize_slug(args.path)}/{normalize_slug(slug)}"
     slug = _reject_unsafe(slug)
     fpath = id_to_path(store, slug)
-    if not is_relative_to(fpath, store):
-        die("destination escapes store")
     if fpath.exists() and not args.force:
         die(f"bookmark exists: {slug} (use --force to overwrite)")
-    fpath.parent.mkdir(parents=True, exist_ok=True)
+    fpath.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     meta = {
         "url": url,
@@ -114,9 +131,18 @@ def cmd_add(args) -> None:
                 tmp.unlink()
             except OSError:
                 pass
-        # Merge back (keep created)
-        meta.update({k: v for k, v in meta2.items() if k != "created"})
+        # Editor is source of truth; preserve only the original created timestamp.
+        original_url = meta["url"]
+        meta = {**meta2, "created": meta["created"]}
         body = body2
+        if not meta.get("url"):
+            die("url cleared in editor")
+        if meta["url"] != original_url:
+            print(
+                f"bm: warning: url changed in editor; entry stored under original slug "
+                f"({slug}). Use `bm mv` to relocate.",
+                file=sys.stderr,
+            )
 
     atomic_write(fpath, build_text(meta, body))
     print(rid(meta.get("url", "")))
@@ -152,6 +178,9 @@ def cmd_open(args) -> None:
     url = meta.get("url")
     if not url:
         die("no url in entry")
+    scheme = (urlparse(url).scheme or "").lower()
+    if scheme not in ALLOWED_URL_SCHEMES and not getattr(args, "allow_scheme", False):
+        die(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
     ok = webbrowser.open(url)
     print(url)
     if not ok:
@@ -161,10 +190,18 @@ def cmd_open(args) -> None:
 def _iter_entries(
     store: Path, meta_only: bool = False
 ) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
-    """Iterate over all entries. If meta_only, skip body parsing."""
+    """Iterate over all entries. If meta_only, skip body parsing.
+
+    Files that fail to load (OSError, decode errors, malformed front matter)
+    are skipped with a stderr warning rather than aborting the iteration.
+    """
     for p in store.rglob(f"*{FILE_EXT}"):
         rel = p.relative_to(store).with_suffix("")
-        meta, body = load_entry(p, meta_only=meta_only)
+        try:
+            meta, body = load_entry(p, meta_only=meta_only)
+        except (OSError, ValueError, UnicodeError) as exc:
+            print(f"bm: skipping {rel}: {exc}", file=sys.stderr)
+            continue
         yield p, rel, meta, body
 
 
@@ -201,6 +238,38 @@ def _matches_path(rel, path_prefix):
     # Check if relative path starts with the prefix
     rel_str = str(rel)
     return rel_str.startswith(path_prefix + "/") or rel_str == path_prefix
+
+
+def _normalize_path_arg(value: Any) -> str:
+    """Coerce an `args.path` value to a clean stripped string."""
+    if value and isinstance(value, str):
+        return value.strip("/")
+    return ""
+
+
+def _resolve_filter_args(args) -> Tuple[Optional[str], str, str, Optional[datetime]]:
+    """Extract the standard (tag, host, path, since_dt) filter tuple from args.
+
+    Only string values are honored — non-string sentinels (e.g. MagicMock from
+    tests) collapse to "no filter" instead of raising at compare time.
+    """
+    tag_raw = getattr(args, "tag", None)
+    tag = tag_raw if isinstance(tag_raw, str) and tag_raw else None
+    host_raw = getattr(args, "host", None)
+    host = host_raw.lower() if isinstance(host_raw, str) else ""
+    path = _normalize_path_arg(getattr(args, "path", None))
+    since_raw = getattr(args, "since", None)
+    since_dt = parse_iso(since_raw) if isinstance(since_raw, str) and since_raw else None
+    return tag, host, path, since_dt
+
+
+def _passes_filters(rel, meta, tag, host, path, since_dt) -> bool:
+    return (
+        _matches_tag(rel, meta, tag)
+        and _matches_host(meta, host)
+        and _matches_path(rel, path)
+        and _matches_since(meta, since_dt)
+    )
 
 
 def _entry_score(entry: Dict[str, Any]) -> Tuple[int, int, float, str]:
@@ -336,23 +405,11 @@ def _build_row(rel, meta, ts):
 
 def _collect_rows(store: Path, args) -> List[dict]:
     rows = []
-    since_dt = parse_iso(args.since) if args.since else None
-    want_host = (args.host or "").lower()
-    want_path = getattr(args, "path", None)
-    if want_path and isinstance(want_path, str):
-        want_path = want_path.strip("/")
-    else:
-        want_path = ""
+    tag, host, path, since_dt = _resolve_filter_args(args)
     for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not _matches_tag(rel, meta, args.tag):
-            continue
-        if not _matches_host(meta, want_host):
-            continue
-        if not _matches_path(rel, want_path):
+        if not _passes_filters(rel, meta, tag, host, path, since_dt):
             continue
         ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-        if not _matches_since(meta, since_dt):
-            continue
         rows.append(_build_row(rel, meta, ts))
     rows.sort(key=lambda r: r["_sort"], reverse=True)
     for r in rows:
@@ -382,28 +439,64 @@ def cmd_list(args) -> None:
     _output_rows(rows, args)
 
 
+_SEARCH_FIELDS = ("title", "url", "tags", "body")
+
+
+def _build_search_blob(meta: Dict[str, Any], body: str, fields: Tuple[str, ...]) -> str:
+    parts = []
+    for f in fields:
+        if f == "title":
+            parts.append(meta.get("title", ""))
+        elif f == "url":
+            parts.append(meta.get("url", ""))
+        elif f == "tags":
+            parts.append(" ".join(meta.get("tags", [])))
+        elif f == "body":
+            parts.append(body)
+    return "\n".join(parts)
+
+
+def _make_search_predicate(query: str, use_regex: bool):
+    """Return `pred(blob_lower) -> bool` for the configured query mode."""
+    if use_regex:
+        try:
+            pattern = re.compile(query, re.IGNORECASE)
+        except re.error as exc:
+            die(f"invalid --regex pattern: {exc}", code=2)
+        return lambda blob: bool(pattern.search(blob))
+    terms = query.lower().split()
+    return lambda blob: all(term in blob for term in terms)
+
+
 def cmd_search(args) -> None:
     """Search bookmarks."""
     store = Path(args.store or DEFAULT_STORE)
-    q = args.query.lower()
-    want_path = getattr(args, "path", None)
-    if want_path and isinstance(want_path, str):
-        want_path = want_path.strip("/")
-    else:
-        want_path = ""
+    fields_arg = getattr(args, "field", None)
+    fields = (
+        tuple(fields_arg)
+        if isinstance(fields_arg, (list, tuple)) and fields_arg
+        else _SEARCH_FIELDS
+    )
+    use_regex = getattr(args, "regex", False) is True
+    matches = _make_search_predicate(args.query, use_regex)
+    tag, host, path, since_dt = _resolve_filter_args(args)
+    needs_body = "body" in fields
     hits = []
-    for _, rel, meta, body in _iter_entries(store):
-        if not _matches_path(rel, want_path):
+    # First pass uses meta_only so only entries that pass the meta filters pay
+    # for a full body read (and only when body is in scope).
+    for p, rel, meta, _ in _iter_entries(store, meta_only=True):
+        if not _passes_filters(rel, meta, tag, host, path, since_dt):
             continue
-        blob = "\n".join(
-            [
-                meta.get("title", ""),
-                meta.get("url", ""),
-                " ".join(meta.get("tags", [])),
-                body,
-            ]
-        ).lower()
-        if all(term in blob for term in q.split()):
+        body = ""
+        if needs_body:
+            try:
+                _, body = load_entry(p)
+            except (OSError, ValueError, UnicodeError):
+                continue
+        blob = _build_search_blob(meta, body, fields)
+        if not use_regex:
+            blob = blob.lower()
+        if matches(blob):
             ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
             hits.append(_build_row(rel, meta, ts))
     hits.sort(key=lambda r: r["_sort"], reverse=True)
@@ -411,6 +504,8 @@ def cmd_search(args) -> None:
         r.pop("_sort", None)
 
     _output_rows(hits, args)
+    if not hits:
+        sys.exit(1)
 
 
 def cmd_edit(args) -> None:
@@ -443,15 +538,20 @@ def cmd_mv(args) -> None:
     src = resolve_id_or_path(store, args.src)
     if not src:
         die("source not found")
+    if src.is_symlink():
+        die("refusing to move a symlink")
     dst_slug = normalize_slug(args.dst)
     dst_slug = _reject_unsafe(dst_slug)
     dst = id_to_path(store, dst_slug)
-    if not is_relative_to(dst, store):
-        die("destination escapes store")
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if dst.exists() and not args.force:
         die("destination exists (use --force)")
-    shutil.move(str(src), str(dst))
+    src_parent = src.parent
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        die(f"move failed: {exc}")
+    _prune_empty_dirs(store, src_parent)
     print(dst.relative_to(store).with_suffix(""))
 
 
@@ -487,6 +587,7 @@ def cmd_dirs(args) -> None:
 
 def _group_entries_by_url(store: Path) -> Dict[str, List[Dict[str, Any]]]:
     buckets: Dict[str, List[Dict[str, Any]]] = {}
+    n = 0
     for path, rel, meta, body in _iter_entries(store):
         url = meta.get("url", "").strip()
         key = normalize_url_for_compare(url)
@@ -495,6 +596,9 @@ def _group_entries_by_url(store: Path) -> Dict[str, List[Dict[str, Any]]]:
         buckets.setdefault(key, []).append(
             {"path": path, "rel": rel, "meta": dict(meta), "body": body}
         )
+        n += 1
+        _progress_tick("dedupe scanning", n)
+    _progress_done("dedupe scanning", n)
     return buckets
 
 
@@ -616,6 +720,13 @@ NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 """
 NETSCAPE_FOOTER = "</DL><p>\n"
 
+_RE_NETSCAPE_FOLDER = re.compile(r"<DT>\s*<H3\b[^>]*>(.*?)</H3>", re.I)
+_RE_NETSCAPE_BOOKMARK = re.compile(r"<DT>\s*<A\b[^>]*HREF=\"([^\"]+)\"[^>]*>(.*?)</A>", re.I)
+_RE_NETSCAPE_TAGS = re.compile(r'\bTAGS="([^"]*)"', re.I)
+_RE_NETSCAPE_ADDDATE = re.compile(r'\bADD_DATE="(\d+)"')
+_RE_NETSCAPE_DLEND = re.compile(r"</DL\b", re.I)
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+
 
 def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
     """Build Netscape HTML with folder hierarchy from entries."""
@@ -665,35 +776,42 @@ def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
     return build_html(root)
 
 
+def _export_row(rel, meta) -> Dict[str, Any]:
+    return {
+        "path": str(rel),
+        "url": meta.get("url", ""),
+        "title": meta.get("title", ""),
+        "tags": meta.get("tags", []),
+        "created": meta.get("created", ""),
+        "modified": meta.get("modified", ""),
+    }
+
+
 def cmd_export(args) -> None:
     """Export bookmarks."""
     store = Path(args.store or DEFAULT_STORE)
+    tag, host, path, since_dt = _resolve_filter_args(args)
     if args.fmt == "netscape":
-        since_dt = parse_iso(args.since) if args.since else None
-        want_host = (args.host or "").lower()
         entries = []
         for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-            if not _matches_host(meta, want_host):
-                continue
-            ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-            if since_dt and (not ts or ts < since_dt):
+            if not _passes_filters(rel, meta, tag, host, path, since_dt):
                 continue
             entries.append((str(rel), meta))
         html_body = _build_netscape_tree(entries)
         sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
     elif args.fmt == "json":
+        if getattr(args, "jsonl", False):
+            # Stream NDJSON one row at a time; output is unsorted.
+            for _, rel, meta, _ in _iter_entries(store, meta_only=True):
+                if not _passes_filters(rel, meta, tag, host, path, since_dt):
+                    continue
+                sys.stdout.write(json.dumps(_export_row(rel, meta), ensure_ascii=False) + "\n")
+            return
         rows = []
         for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-            rows.append(
-                {
-                    "path": str(rel),
-                    "url": meta.get("url", ""),
-                    "title": meta.get("title", ""),
-                    "tags": meta.get("tags", []),
-                    "created": meta.get("created", ""),
-                    "modified": meta.get("modified", ""),
-                }
-            )
+            if not _passes_filters(rel, meta, tag, host, path, since_dt):
+                continue
+            rows.append(_export_row(rel, meta))
         rows.sort(key=lambda r: r["path"])
         print(json.dumps(rows, ensure_ascii=False))
     else:
@@ -710,18 +828,18 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     while i < len(lines):
         line = lines[i].strip()
         # FOLDER START: <DT><H3 ...>Name</H3>
-        m = re.search(r"<DT>\s*<H3\b[^>]*>(.*?)</H3>", line, re.I)
+        m = _RE_NETSCAPE_FOLDER.search(line)
         if m:
             folder_name = html.unescape(m.group(1))
             folder_stack.append(folder_name)
             i += 1
             continue
         # BOOKMARK: <DT><A ... HREF="...">Title</A>
-        m = re.search(r"<DT>\s*<A\b[^>]*HREF=\"([^\"]+)\"[^>]*>(.*?)</A>", line, re.I)
+        m = _RE_NETSCAPE_BOOKMARK.search(line)
         if m:
             url, title_html = m.group(1), m.group(2)
-            title = html.unescape(re.sub("<[^>]+>", "", title_html))
-            tagm = re.search(r'\bTAGS="([^"]*)"', line, re.I)
+            title = html.unescape(_RE_HTML_TAG.sub("", title_html))
+            tagm = _RE_NETSCAPE_TAGS.search(line)
             tags = [t.strip() for t in (tagm.group(1) if tagm else "").split(",") if t.strip()]
             path = "/".join(folder_stack) if folder_stack else ""
             meta = {
@@ -731,7 +849,7 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
                 "created": iso_now(),  # (optional: parse ADD_DATE below)
             }
             # harvest ADD_DATE -> created
-            add_date = re.search(r'\bADD_DATE="(\d+)"', line)
+            add_date = _RE_NETSCAPE_ADDDATE.search(line)
             if add_date:
                 try:
                     meta["created"] = datetime.fromtimestamp(
@@ -744,7 +862,7 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
             continue
 
         # FOLDER END: </DL> or </DL><p>
-        if re.match(r"</DL\b", line, re.I):
+        if _RE_NETSCAPE_DLEND.match(line):
             if folder_stack:
                 folder_stack.pop()
             i += 1
@@ -757,18 +875,64 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
 def cmd_import(args) -> None:
     """Import bookmarks from Netscape HTML."""
     store = Path(args.store or DEFAULT_STORE)
-    store.mkdir(parents=True, exist_ok=True)
+    store.mkdir(parents=True, exist_ok=True, mode=0o700)
     text = Path(args.file).read_text(encoding="utf-8", errors="replace")
     entries = _parse_netscape_html(text)
+    skipped_scheme = 0
+    skipped_unsafe = 0
+    written = 0
     for path, meta in entries:
+        scheme = (urlparse(meta.get("url", "")).scheme or "").lower()
+        if scheme not in ALLOWED_URL_SCHEMES:
+            skipped_scheme += 1
+            continue
         slug = create_slug_from_url(meta["url"])
         full_path = f"{path}/{slug}" if path else slug
-        fpath = id_to_path(store, full_path)
+        try:
+            fpath = id_to_path(store, full_path)
+        except SystemExit:
+            skipped_unsafe += 1
+            continue
         if fpath.exists() and not args.force:
             continue
-        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         atomic_write(fpath, build_text(meta, ""))
+        written += 1
+        _progress_tick("import", written)
+    _progress_done("import", written)
+    if skipped_scheme:
+        print(
+            f"bm: skipped {skipped_scheme} entries with disallowed URL scheme",
+            file=sys.stderr,
+        )
+    if skipped_unsafe:
+        print(
+            f"bm: skipped {skipped_unsafe} entries with unsafe folder paths",
+            file=sys.stderr,
+        )
     print("import ok")
+
+
+# Neutralize store-local `.git/config` keys that can run arbitrary commands
+# (CVE-2022-39253 family: core.fsmonitor / core.sshCommand / core.hooksPath).
+# `-c` overrides win after the per-repo config is read.
+_GIT_HARDENED_PREFIX = (
+    "git",
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.sshCommand=",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.file.allow=user",
+)
+
+
+def _git_cmd(*args: str) -> List[str]:
+    return [*_GIT_HARDENED_PREFIX, *args]
 
 
 def cmd_sync(args) -> None:
@@ -786,51 +950,46 @@ def cmd_sync(args) -> None:
                 code=exc.returncode or 1,
             )
 
-    run_git(["git", "add", "-A"])
-    run_git(["git", "commit", "-m", "bm sync", "--allow-empty"])
+    run_git(_git_cmd("add", "-A"))
+    run_git(_git_cmd("commit", "-m", "bm sync", "--allow-empty"))
     # push only if upstream exists
     r = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"),
         cwd=store,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     if r.returncode == 0:
-        run_git(["git", "push"])
-
-
-def find_candidates(store: Path, needle: str) -> List[Path]:
-    """Exact path or fuzzy by filename stem suffix."""
-    needle = normalize_slug(needle)
-    needle = _reject_unsafe(needle)
-    exact = id_to_path(store, needle)
-    if exact.exists():
-        return [exact]
-    name = Path(needle).name  # compare against last component
-    hits = []
-    for p in store.rglob(f"*{FILE_EXT}"):
-        if name in p.stem:
-            hits.append(p)
-    return sorted(hits)
+        run_git(_git_cmd("push"))
 
 
 def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
-    """Accept either a stable ID (by URL) or a path-ish token."""
+    """Accept either a stable ID (by URL) or a path-ish token.
+
+    Priority: exact path > unique fuzzy filename match > rid (URL hash) match.
+    Aborts with a disambiguation list when fuzzy matches are not unique.
+    """
     token = token.strip()
-    # 1. Try exact path match (no scan needed)
     slug = normalize_slug(token)
     slug = _reject_unsafe(slug)
     exact = id_to_path(store, slug)
     if exact.exists():
         return exact
-    # 2. Try fuzzy filename match (scan filenames only, no file reads)
+
     name = Path(slug).name
+    fuzzy = [p for p in store.rglob(f"*{FILE_EXT}") if name in p.stem]
+    if len(fuzzy) == 1:
+        return fuzzy[0]
+    if len(fuzzy) > 1:
+        listing = "\n  ".join(str(p.relative_to(store).with_suffix("")) for p in sorted(fuzzy))
+        die(f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}")
+
+    # Last resort: ID match by URL hash (requires reading files).
     for p in store.rglob(f"*{FILE_EXT}"):
-        if name in p.stem:
-            return p
-    # 3. Last resort: ID match by URL hash (requires reading files)
-    for p in store.rglob(f"*{FILE_EXT}"):
-        meta, _ = load_entry(p, meta_only=True)
+        try:
+            meta, _ = load_entry(p, meta_only=True)
+        except (OSError, ValueError, UnicodeError):
+            continue
         url = meta.get("url", "")
         if url and rid(url) == token:
             return p

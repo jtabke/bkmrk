@@ -21,7 +21,6 @@ from bm.commands import (
     cmd_sync,
     cmd_tag,
     cmd_tags,
-    find_candidates,
     resolve_id_or_path,
 )
 from bm.io import load_entry
@@ -44,8 +43,27 @@ class TestCmdInit:
         readme = store / "README.txt"
         assert readme.exists()
 
+    def test_init_sets_restrictive_modes(self, tmp_path):
+        """Store dir should be 0o700 and README.txt 0o600 on POSIX."""
+        import stat
+        import sys as _sys
+
+        if _sys.platform == "win32":
+            return  # POSIX permissions not meaningful
+
+        store = tmp_path / "store"
+        args = MagicMock()
+        args.store = str(store)
+        args.git = False
+        cmd_init(args)
+
+        assert stat.S_IMODE(store.stat().st_mode) == 0o700
+        assert stat.S_IMODE((store / "README.txt").stat().st_mode) == 0o600
+
     def test_init_with_git(self, tmp_path):
         """Should initialize git repo if requested."""
+        from bm.commands import _git_cmd
+
         store = tmp_path / "store"
         args = MagicMock()
         args.store = str(store)
@@ -54,7 +72,7 @@ class TestCmdInit:
         with patch("subprocess.run") as mock_run:
             cmd_init(args)
 
-        mock_run.assert_called_once_with(["git", "init"], cwd=store)
+        mock_run.assert_called_once_with(_git_cmd("init"), cwd=store)
 
     def test_init_without_git_does_not_call_git(self, tmp_path):
         """Should not call git if not requested."""
@@ -140,6 +158,91 @@ class TestCmdAdd:
         with patch("bm.commands._launch_editor"):
             cmd_add(args)  # Should succeed
 
+    def test_add_edit_replaces_fields_and_preserves_created(self, tmp_path):
+        """Editor edits should fully replace meta (only created is preserved)."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        args = argparse.Namespace(
+            store=str(store),
+            url="https://example.com",
+            id=None,
+            path=None,
+            name="Original",
+            tags="orig1,orig2",
+            description="orig body",
+            force=False,
+            edit=True,
+        )
+
+        def fake_editor(path):
+            # Simulate user keeping url+title, removing tags, setting notes.
+            path.write_text("---\nurl: https://example.com\ntitle: Edited\n---\nedited body\n")
+
+        with patch("bm.commands._launch_editor", side_effect=fake_editor):
+            cmd_add(args)
+
+        fpath = next(store.glob("*.bm"))
+        content = fpath.read_text()
+        assert "title: Edited" in content
+        # Tags removed in editor must NOT survive merge.
+        assert "tags:" not in content
+        assert "edited body" in content
+        # created from pre-edit meta must be preserved.
+        assert "created:" in content
+
+    def test_add_edit_warns_when_url_changed(self, tmp_path, capsys):
+        """Should warn when editor changes the URL (slug/url mismatch)."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        args = argparse.Namespace(
+            store=str(store),
+            url="https://original.example.com",
+            id=None,
+            path=None,
+            name=None,
+            tags=None,
+            description=None,
+            force=False,
+            edit=True,
+        )
+
+        def change_url(path):
+            path.write_text("---\nurl: https://changed.example.com\n---\n")
+
+        with patch("bm.commands._launch_editor", side_effect=change_url):
+            cmd_add(args)
+        captured = capsys.readouterr()
+        assert "url changed in editor" in captured.err
+
+    def test_add_edit_dies_when_url_cleared(self, tmp_path):
+        """Should refuse to write when editor leaves url blank."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        args = argparse.Namespace(
+            store=str(store),
+            url="https://example.com",
+            id=None,
+            path=None,
+            name=None,
+            tags=None,
+            description=None,
+            force=False,
+            edit=True,
+        )
+
+        def clear_url(path):
+            path.write_text("---\ntitle: nothing\n---\n")
+
+        with patch("bm.commands._launch_editor", side_effect=clear_url):
+            with pytest.raises(SystemExit):
+                cmd_add(args)
+
 
 class TestResolveIdOrPath:
     """Test resolve_id_or_path function."""
@@ -207,84 +310,19 @@ url: https://different.com/page1-suffix
         result = resolve_id_or_path(store, bookmark_id)
         assert result == fpath1
 
-    def test_resolve_fuzzy_picks_suffix_deterministically(self, tmp_path):
-        """Should pick the first match deterministically for fuzzy search."""
+    def test_resolve_fuzzy_ambiguous_dies(self, tmp_path, capsys):
+        """Should abort with disambiguation list when fuzzy match is not unique."""
         store = tmp_path / "store"
         store.mkdir()
-        # Create multiple bookmarks ending with same suffix
-        content1 = """---
-url: https://example1.com
----
-"""
-        fpath1 = store / "prefix-suffix.bm"
-        fpath1.write_text(content1)
+        (store / "prefix-suffix.bm").write_text("---\nurl: https://example1.com\n---\n")
+        (store / "other-suffix.bm").write_text("---\nurl: https://example2.com\n---\n")
 
-        content2 = """---
-url: https://example2.com
----
-"""
-        fpath2 = store / "other-suffix.bm"
-        fpath2.write_text(content2)
-
-        # Fuzzy search for "suffix" should return a valid match
-        result = resolve_id_or_path(store, "suffix")
-        assert result in (fpath1, fpath2)
-
-
-class TestFindCandidates:
-    """Test find_candidates function."""
-
-    def test_exact_match(self, tmp_path):
-        """Should find exact match."""
-        store = tmp_path / "store"
-        store.mkdir()
-        fpath = store / "test.bm"
-        fpath.write_text("content")
-
-        result = find_candidates(store, "test")
-        assert result == [fpath]
-
-    def test_fuzzy_match(self, tmp_path):
-        """Should find fuzzy match."""
-        store = tmp_path / "store"
-        store.mkdir()
-        fpath = store / "example-test-abc123.bm"
-        fpath.write_text("content")
-
-        result = find_candidates(store, "test")
-        assert result == [fpath]
-
-    def test_find_candidates_none(self, tmp_path):
-        """Should return empty list for no matches."""
-        store = tmp_path / "store"
-        store.mkdir()
-        assert find_candidates(store, "nope") == []
-
-    def test_find_candidates_short_needle_many_matches(self, tmp_path):
-        """Should return many matches for short needles in deterministic order."""
-        store = tmp_path / "store"
-        store.mkdir()
-        # Create multiple bookmarks that would match a short needle
-        bookmarks = [
-            "alpha.bm",
-            "beta.bm",
-            "gamma.bm",
-            "delta.bm",
-            "alpine.bm",
-            "baker.bm",
-        ]
-        for name in bookmarks:
-            (store / name).write_text("content")
-
-        # Short needle "al" should match alpha, alpine
-        result = find_candidates(store, "al")
-        expected = sorted([store / "alpha.bm", store / "alpine.bm"])
-        assert result == expected
-
-        # Needle "ba" should match baker
-        result = find_candidates(store, "ba")
-        expected = [store / "baker.bm"]
-        assert result == expected
+        with pytest.raises(SystemExit):
+            resolve_id_or_path(store, "suffix")
+        captured = capsys.readouterr()
+        assert "ambiguous" in captured.err
+        assert "prefix-suffix" in captured.err
+        assert "other-suffix" in captured.err
 
 
 class TestCmdList:
@@ -486,6 +524,31 @@ created: 2023-01-16T10:00:00Z
         assert obj1["path"] == "b"
         assert obj2["path"] == "a"
 
+    def test_list_skips_unreadable_files(self, tmp_path, capsys):
+        """Should warn and continue when a .bm path cannot be read."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "good.bm").write_text("---\nurl: https://good.example.com\n---\n")
+        # A directory matching *.bm trips IsADirectoryError on read_text.
+        (store / "bad.bm").mkdir()
+
+        args = argparse.Namespace(
+            store=str(store),
+            host=None,
+            tag=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+
+        cmd_list(args)
+        captured = capsys.readouterr()
+        assert "good" in captured.out
+        assert "skipping bad" in captured.err
+
 
 class TestCmdSearch:
     """Test cmd_search function."""
@@ -534,7 +597,9 @@ tags: [python]
         args.json = False
         args.jsonl = False
 
-        cmd_search(args)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_search(args)
+        assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "test" not in captured.out
 
@@ -665,6 +730,93 @@ class TestCmdImport:
         assert meta["url"] == "https://example.com"
         assert meta["title"] == "Example Title"
         assert meta["tags"] == ["tag1", "tag2"]
+
+    def test_import_progress_silent_when_not_a_tty(self, tmp_path, capsys):
+        """Progress lines should be suppressed when stderr is not a TTY."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        netscape_content = (
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n"
+            "<DL><p>\n"
+            + "\n".join(f'<DT><A HREF="https://e{i}.example.com">E{i}</A>' for i in range(3))
+            + "\n</DL><p>\n"
+        )
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(netscape_content)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.file = str(netscape_file)
+        args.force = False
+
+        cmd_import(args)
+        captured = capsys.readouterr()
+        # capsys non-TTY → no `\rbm: import:` progress lines
+        assert "\rbm: import" not in captured.err
+
+    def test_import_skips_unsafe_folder(self, tmp_path, capsys):
+        """Should skip entries whose folder path is unsafe and continue."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<DL><p>
+<DT><H3>...</H3>
+<DL><p>
+<DT><A HREF="https://bad.example.com">Bad</A>
+</DL><p>
+<DT><A HREF="https://good.example.com">Good</A>
+</DL><p>"""
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(netscape_content)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.file = str(netscape_file)
+        args.force = False
+
+        cmd_import(args)
+
+        files = list(store.rglob("*.bm"))
+        assert len(files) == 1
+        meta, _ = load_entry(files[0])
+        assert meta["url"] == "https://good.example.com"
+        captured = capsys.readouterr()
+        assert "unsafe folder paths" in captured.err
+
+    def test_import_skips_disallowed_scheme(self, tmp_path, capsys):
+        """Should skip entries with javascript:/file: URLs and warn on stderr."""
+        store = tmp_path / "store"
+        store.mkdir()
+
+        netscape_content = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+<DT><A HREF="javascript:alert(1)">XSS</A>
+<DT><A HREF="file:///etc/passwd">Local</A>
+<DT><A HREF="https://safe.example.com">Safe</A>
+</DL><p>"""
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(netscape_content)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.fmt = "netscape"
+        args.file = str(netscape_file)
+        args.force = False
+
+        cmd_import(args)
+
+        files = list(store.glob("*.bm"))
+        assert len(files) == 1
+        meta, _ = load_entry(files[0])
+        assert meta["url"] == "https://safe.example.com"
+        captured = capsys.readouterr()
+        assert "skipped 2 entries" in captured.err
 
     def test_import_netscape_add_date_respects_created(self, tmp_path):
         """Should use ADD_DATE for created timestamp."""
@@ -1015,6 +1167,7 @@ modified: 2023-01-15T10:00:00Z
         args.fmt = "json"
         args.host = None
         args.since = None
+        args.jsonl = False
 
         cmd_export(args)
         captured = capsys.readouterr()
@@ -1038,6 +1191,221 @@ modified: 2023-01-15T10:00:00Z
         # Should be sorted by path (a before b)
         assert rows[0]["path"] == "a"
         assert rows[1]["path"] == "b"
+
+    def test_export_json_filters_by_host_and_tag(self, tmp_path, capsys):
+        """`export json` should honor --host/--tag filters."""
+        import argparse
+        import json as _json
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text("---\nurl: https://a.example.com\ntags: [keep]\n---\n")
+        (store / "b.bm").write_text("---\nurl: https://b.example.com\ntags: [drop]\n---\n")
+
+        args = argparse.Namespace(
+            store=str(store),
+            fmt="json",
+            host="a.example.com",
+            since=None,
+            tag=None,
+            path=None,
+            jsonl=False,
+        )
+        cmd_export(args)
+        rows = _json.loads(capsys.readouterr().out)
+        assert [r["url"] for r in rows] == ["https://a.example.com"]
+
+        args = argparse.Namespace(
+            store=str(store),
+            fmt="json",
+            host=None,
+            since=None,
+            tag="keep",
+            path=None,
+            jsonl=False,
+        )
+        cmd_export(args)
+        rows = _json.loads(capsys.readouterr().out)
+        assert [r["url"] for r in rows] == ["https://a.example.com"]
+
+    def test_search_regex_match(self, tmp_path, capsys):
+        """`search --regex` should accept Python regex patterns."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text("---\nurl: https://a.example.com\ntitle: rust async\n---\n")
+        (store / "b.bm").write_text("---\nurl: https://b.example.com\ntitle: python sync\n---\n")
+
+        args = argparse.Namespace(
+            store=str(store),
+            query=r"^rust\s",
+            regex=True,
+            field=None,
+            tag=None,
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        cmd_search(args)
+        out = capsys.readouterr().out
+        assert "a" in out
+        assert "b\n" not in out
+
+    def test_search_field_scope(self, tmp_path, capsys):
+        """`search --field tags` should only match the tags field."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        # title says "match" but tag does not
+        (store / "a.bm").write_text(
+            "---\nurl: https://a.example.com\ntitle: match me\ntags: [other]\n---\n"
+        )
+        # tag says "match" but title does not
+        (store / "b.bm").write_text(
+            "---\nurl: https://b.example.com\ntitle: nope\ntags: [match]\n---\n"
+        )
+
+        args = argparse.Namespace(
+            store=str(store),
+            query="match",
+            regex=False,
+            field=["tags"],
+            tag=None,
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        cmd_search(args)
+        out = capsys.readouterr().out
+        assert "b" in out
+        assert "a\n" not in out
+
+    def test_search_invalid_regex_dies(self, tmp_path):
+        """An invalid regex must abort with code 2."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text("---\nurl: https://a.example.com\n---\n")
+
+        args = argparse.Namespace(
+            store=str(store),
+            query="(unbalanced",
+            regex=True,
+            field=None,
+            tag=None,
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_search(args)
+        assert exc_info.value.code == 2
+
+    def test_search_zero_hits_exits_one(self, tmp_path):
+        """No matches should exit code 1."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text("---\nurl: https://a.example.com\n---\n")
+
+        args = argparse.Namespace(
+            store=str(store),
+            query="nomatchpossible",
+            regex=False,
+            field=None,
+            tag=None,
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_search(args)
+        assert exc_info.value.code == 1
+
+    def test_search_via_fixtures(self, store, args_factory, write_bm, capsys):
+        """Smoke test of the conftest fixtures via cmd_search."""
+        write_bm("a", url="https://a.example.com", title="match me")
+        write_bm("b", url="https://b.example.com", title="other")
+
+        args = args_factory(
+            query="match",
+            regex=False,
+            field=None,
+            tag=None,
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        cmd_search(args)
+        out = capsys.readouterr().out
+        assert "a" in out
+        assert "b\n" not in out
+
+    def test_search_filters_by_tag(self, tmp_path, capsys):
+        """`search` should honor the standard --tag filter."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text(
+            "---\nurl: https://a.example.com\ntags: [keep]\n---\nbody match\n"
+        )
+        (store / "b.bm").write_text(
+            "---\nurl: https://b.example.com\ntags: [drop]\n---\nbody match\n"
+        )
+
+        args = argparse.Namespace(
+            store=str(store),
+            query="match",
+            tag="keep",
+            host=None,
+            since=None,
+            path=None,
+            json=False,
+            jsonl=False,
+        )
+        cmd_search(args)
+        out = capsys.readouterr().out
+        assert "a" in out
+        assert "b\n" not in out
+
+    def test_export_jsonl_streams_one_per_line(self, tmp_path, capsys):
+        """`--jsonl` should emit one JSON object per line and skip the array."""
+        import argparse
+        import json as _json
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "a.bm").write_text("---\nurl: https://a.example.com\n---\n")
+        (store / "b.bm").write_text("---\nurl: https://b.example.com\n---\n")
+
+        args = argparse.Namespace(
+            store=str(store),
+            fmt="json",
+            host=None,
+            since=None,
+            jsonl=True,
+        )
+        cmd_export(args)
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln]
+        assert len(lines) == 2
+        urls = sorted(_json.loads(ln)["url"] for ln in lines)
+        assert urls == ["https://a.example.com", "https://b.example.com"]
 
     def test_export_netscape_with_folders(self, tmp_path, capsys):
         """Should export bookmarks with folder hierarchies in Netscape format."""
@@ -1185,6 +1553,36 @@ title: Test
         captured = capsys.readouterr()
         assert "https://example.com" in captured.out
         assert "warning: system did not acknowledge opening browser" in captured.err
+
+    def test_open_refuses_disallowed_scheme(self, tmp_path, capsys):
+        """Should refuse to open javascript: URLs without --allow-scheme."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "evil.bm").write_text("---\nurl: javascript:alert(1)\n---\n")
+
+        args = argparse.Namespace(store=str(store), id="evil", allow_scheme=False)
+
+        with patch("webbrowser.open") as mock_open, pytest.raises(SystemExit):
+            cmd_open(args)
+        mock_open.assert_not_called()
+        captured = capsys.readouterr()
+        assert "refusing to open 'javascript' URL" in captured.err
+
+    def test_open_allow_scheme_override(self, tmp_path):
+        """Should open disallowed scheme when --allow-scheme is set."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "evil.bm").write_text("---\nurl: javascript:alert(1)\n---\n")
+
+        args = argparse.Namespace(store=str(store), id="evil", allow_scheme=True)
+
+        with patch("webbrowser.open", return_value=True) as mock_open:
+            cmd_open(args)
+        mock_open.assert_called_once_with("javascript:alert(1)")
 
 
 class TestCmdShow:
@@ -1516,6 +1914,46 @@ class TestCmdMv:
         # Source should still exist
         assert src_path.exists()
 
+    def test_mv_refuses_symlink_source(self, tmp_path):
+        """Should refuse to move when source is a symlink."""
+        store = tmp_path / "store"
+        store.mkdir()
+        target = tmp_path / "outside.bm"
+        target.write_text("---\nurl: https://outside.example.com\n---\n")
+        link = store / "linked.bm"
+        link.symlink_to(target)
+
+        args = MagicMock()
+        args.store = str(store)
+        args.src = "linked"
+        args.dst = "elsewhere"
+        args.force = False
+
+        with pytest.raises(SystemExit):
+            cmd_mv(args)
+        assert link.is_symlink()
+        assert target.exists()
+
+    def test_mv_prunes_empty_source_dir(self, tmp_path):
+        """Should prune empty parent directories left behind by move."""
+        store = tmp_path / "store"
+        store.mkdir()
+        src_dir = store / "dev" / "python"
+        src_dir.mkdir(parents=True)
+        (src_dir / "x.bm").write_text("---\nurl: https://x.example.com\n---\n")
+
+        args = MagicMock()
+        args.store = str(store)
+        args.src = "dev/python/x"
+        args.dst = "news/x"
+        args.force = False
+
+        cmd_mv(args)
+
+        assert (store / "news" / "x.bm").exists()
+        assert not src_dir.exists()
+        assert not (store / "dev").exists()
+
 
 class TestCmdTags:
     """Test cmd_tags function."""
@@ -1717,6 +2155,85 @@ url: http://example.com
         assert payload[0]["dry_run"]
 
 
+class TestCmdDirs:
+    """Test cmd_dirs function."""
+
+    def test_dirs_lists_unique_prefixes(self, store, args_factory, write_bm, capsys):
+        from bm.commands import cmd_dirs
+
+        write_bm("dev/python/x", url="https://x")
+        write_bm("dev/web/y", url="https://y")
+        write_bm("news/z", url="https://z")
+        write_bm("root", url="https://r")
+
+        args = args_factory(json=False)
+        cmd_dirs(args)
+        out = capsys.readouterr().out.splitlines()
+        assert out == ["dev", "dev/python", "dev/web", "news"]
+
+    def test_dirs_json_output(self, store, args_factory, write_bm, capsys):
+        import json as _json
+
+        from bm.commands import cmd_dirs
+
+        write_bm("dev/python/x", url="https://x")
+        args = args_factory(json=True)
+        cmd_dirs(args)
+        assert _json.loads(capsys.readouterr().out) == ["dev", "dev/python"]
+
+
+class TestNotFoundDies:
+    """Each lookup command should die cleanly when the id is unknown."""
+
+    @pytest.mark.parametrize(
+        "ctor, extra",
+        [
+            ("show", {}),
+            ("open", {"allow_scheme": False}),
+            ("edit", {}),
+            ("rm", {}),
+            ("tag", {"action": "add", "tags": ["x"]}),
+        ],
+    )
+    def test_unknown_id_exits(self, store, args_factory, ctor, extra):
+        import bm.commands as cmds
+
+        fn = getattr(cmds, f"cmd_{ctor}")
+        args = args_factory(id="ghost", **extra)
+        with pytest.raises(SystemExit):
+            fn(args)
+
+
+class TestStoreMissingDies:
+    """Commands that explicitly check for the store should die when it's gone."""
+
+    @pytest.mark.parametrize(
+        "name, extra",
+        [
+            (
+                "list",
+                {
+                    "json": False,
+                    "jsonl": False,
+                    "tag": None,
+                    "host": None,
+                    "since": None,
+                    "path": None,
+                },
+            ),
+            ("dedupe", {"json": False, "dry_run": False}),
+        ],
+    )
+    def test_missing_store(self, tmp_path, name, extra):
+        import argparse
+
+        import bm.commands as cmds
+
+        args = argparse.Namespace(store=str(tmp_path / "nope"), **extra)
+        with pytest.raises(SystemExit):
+            getattr(cmds, f"cmd_{name}")(args)
+
+
 class TestCmdSync:
     """Test cmd_sync function."""
 
@@ -1734,6 +2251,8 @@ class TestCmdSync:
 
     def test_sync_success_adds_and_commits(self, tmp_path):
         """Should run git add and commit on success."""
+        from bm.commands import _git_cmd
+
         store = tmp_path / "store"
         store.mkdir()
         # Create .git directory to simulate git repo
@@ -1750,21 +2269,18 @@ class TestCmdSync:
             ]
             cmd_sync(args)
 
-        # Should have called git add and git commit
         calls = mock_run.call_args_list
-        assert len(calls) == 3  # add, commit, rev-parse
-        assert calls[0][0][0] == ["git", "add", "-A"]
-        assert calls[1][0][0] == ["git", "commit", "-m", "bm sync", "--allow-empty"]
-        assert calls[2][0][0] == [
-            "git",
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{u}",
-        ]
+        assert len(calls) == 3
+        assert calls[0][0][0] == _git_cmd("add", "-A")
+        assert calls[1][0][0] == _git_cmd("commit", "-m", "bm sync", "--allow-empty")
+        assert calls[2][0][0] == _git_cmd(
+            "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
+        )
 
     def test_sync_pushes_when_upstream_exists(self, tmp_path):
         """Should push when upstream exists."""
+        from bm.commands import _git_cmd
+
         store = tmp_path / "store"
         store.mkdir()
         (store / ".git").mkdir()
@@ -1772,23 +2288,25 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
+        rev_parse = _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
         with patch("subprocess.run") as mock_run:
-            # Mock successful upstream check (return code 0 means upstream exists)
+
             def mock_return(*args, **kwargs):
-                if args[0] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
+                if args[0] == rev_parse:
                     return MagicMock(returncode=0)
                 return MagicMock(returncode=0)
 
             mock_run.side_effect = mock_return
             cmd_sync(args)
 
-        # Should have called git add, commit, rev-parse, and push
         calls = mock_run.call_args_list
         assert len(calls) == 4
-        assert calls[3][0][0] == ["git", "push"]
+        assert calls[3][0][0] == _git_cmd("push")
 
     def test_sync_skips_push_when_no_upstream(self, tmp_path):
         """Should skip push when no upstream exists."""
+        from bm.commands import _git_cmd
+
         store = tmp_path / "store"
         store.mkdir()
         (store / ".git").mkdir()
@@ -1796,23 +2314,26 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
+        rev_parse = _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        push = _git_cmd("push")
         with patch("subprocess.run") as mock_run:
-            # Mock failed upstream check (return code 1 means no upstream)
+
             def mock_return(*args, **kwargs):
-                if args[0] == ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]:
+                if args[0] == rev_parse:
                     return MagicMock(returncode=1)
                 return MagicMock(returncode=0)
 
             mock_run.side_effect = mock_return
             cmd_sync(args)
 
-        # Should have called git add, commit, rev-parse, but not push
         calls = mock_run.call_args_list
         assert len(calls) == 3
-        assert all(call[0][0] != ["git", "push"] for call in calls)
+        assert all(call[0][0] != push for call in calls)
 
     def test_sync_surfaces_git_failure(self, tmp_path):
         """Should exit if a git command fails."""
+        from bm.commands import _git_cmd
+
         store = tmp_path / "store"
         store.mkdir()
         (store / ".git").mkdir()
@@ -1823,14 +2344,43 @@ class TestCmdSync:
         with patch("subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(
                 returncode=5,
-                cmd=["git", "add", "-A"],
+                cmd=_git_cmd("add", "-A"),
             )
             with pytest.raises(SystemExit) as exc_info:
                 cmd_sync(args)
 
         assert exc_info.value.code == 5
         first_call = mock_run.call_args_list[0]
-        assert first_call[0][0] == ["git", "add", "-A"]
+        assert first_call[0][0] == _git_cmd("add", "-A")
+
+    def test_sync_uses_hardened_git_prefix(self, tmp_path):
+        """Every git invocation should pass the hardening -c overrides."""
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / ".git").mkdir()
+
+        args = MagicMock()
+        args.store = str(store)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            cmd_sync(args)
+
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            assert cmd[:11] == [
+                "git",
+                "-c",
+                "core.fsmonitor=",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.sshCommand=",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "protocol.file.allow=user",
+            ]
 
 
 class TestCmdTag:
