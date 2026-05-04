@@ -197,6 +197,8 @@ class TestNormalizeUrlForCompare:
     def test_missing_scheme(self):
         """Should treat schemeless host paths as HTTP when a host is present."""
         assert normalize_url_for_compare("example.com/path") == "example.com/path"
+        assert normalize_url_for_compare("example.com:80/path") == "example.com/path"
+        assert normalize_url_for_compare("localhost:8000/path") == "localhost:8000/path"
 
     def test_non_host_schemeless_values_preserve_raw_lowercase(self):
         """Schemeless values without a host should use the raw text as their key."""
@@ -271,6 +273,10 @@ class TestUrlCompareHelpers:
     def test_parse_for_compare(self):
         parsed, scheme = _parse_for_compare("example.com/path")
         assert parsed.netloc == "example.com"
+        assert scheme == "http"
+
+        parsed, scheme = _parse_for_compare("example.com:8080/path")
+        assert parsed.netloc == "example.com:8080"
         assert scheme == "http"
 
         parsed, scheme = _parse_for_compare("MAILTO:User@Example.com")
@@ -392,10 +398,36 @@ class TestCreateSlugFromUrl:
         assert slug.startswith("example-com-")
         assert "www-" not in slug
 
+    def test_embedded_www_is_preserved(self):
+        """Only a leading www. host label should be stripped."""
+        assert create_slug_from_url("https://mywww.example.com/path").startswith(
+            "mywww-example-com-path-"
+        )
+        assert create_slug_from_url("https://example.www.com/path").startswith(
+            "example-www-com-path-"
+        )
+
     def test_no_netloc_falls_back_to_link(self):
         """Schemeless / no-host URLs should fall back to the literal `link`."""
         slug = create_slug_from_url("just-some-text")
         assert slug.startswith("link-") or slug.startswith("link")
+
+    def test_schemeless_hosts_use_host_slug(self):
+        """Host-like schemeless URLs should not fall back to `link`."""
+        assert create_slug_from_url("example.com/path").startswith("example-com-path-")
+        assert create_slug_from_url("localhost:8000/path").startswith("localhost-8000-path-")
+
+    def test_userinfo_is_excluded_from_slug(self):
+        """Credentials/userinfo must not leak into generated slugs."""
+        slug = create_slug_from_url("https://user:pass@example.com/path")
+        assert slug.startswith("example-com-path-")
+        assert "user" not in slug
+        assert "pass" not in slug
+
+    def test_default_port_is_excluded_from_slug(self):
+        """Default HTTP/HTTPS ports should not clutter generated slugs."""
+        assert create_slug_from_url("https://example.com:443/path").startswith("example-com-path-")
+        assert create_slug_from_url("example.com:80/path").startswith("example-com-path-")
 
     def test_path_segment_split_on_slash_only(self):
         """Path segmentation must split on '/' specifically (not whitespace)."""

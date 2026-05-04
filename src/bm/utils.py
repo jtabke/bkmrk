@@ -123,12 +123,64 @@ def _short_sha(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:7]
 
 
+def _strip_leading_www(host: str) -> str:
+    """Strip only a leading www. label from a hostname."""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _port_or_none(parsed: ParseResult) -> Optional[int]:
+    """Return a parsed URL port, treating invalid ports as absent."""
+    try:
+        return parsed.port
+    except ValueError:
+        return None
+
+
+def _is_default_web_port(scheme: str, port: Optional[int]) -> bool:
+    """Return whether port is the default for HTTP/HTTPS URL comparison."""
+    return (scheme in {"", "http"} and port == 80) or (scheme == "https" and port == 443)
+
+
+def _looks_like_schemeless_host(netloc: str) -> bool:
+    """Heuristic for deciding whether schemeless text starts with a host."""
+    if not netloc:
+        return False
+    host = netloc.rsplit("@", 1)[-1].split(":", 1)[0].strip("[]").lower()
+    return host == "localhost" or "." in host
+
+
+def _parse_for_slug(raw: str) -> ParseResult:
+    """Parse a URL for slug creation, recognizing conservative schemeless hosts."""
+    parsed = urlparse(raw)
+    if parsed.netloc or "://" in raw:
+        return parsed
+    if parsed.scheme and not _looks_like_schemeless_host(parsed.scheme):
+        return parsed
+
+    candidate = urlparse(f"http://{raw}")
+    if _looks_like_schemeless_host(candidate.netloc):
+        return candidate
+    return parsed
+
+
+def _slug_host(parsed: ParseResult) -> str:
+    """Return a hostname-derived slug prefix, excluding userinfo and default ports."""
+    host = (parsed.hostname or "link").lower()
+    host = _strip_leading_www(host)
+    host = host.replace(":", "-").replace(".", "-")
+
+    scheme = (parsed.scheme or "").lower()
+    port = _port_or_none(parsed)
+    if port is not None and not _is_default_web_port(scheme, port):
+        host = f"{host}-{port}"
+    return host
+
+
 def create_slug_from_url(url: str) -> str:
     """Derive human-readable slug + short hash (collision-resistant)."""
     try:
-        p = urlparse(url)
-        host = (p.netloc or "link").lower().replace("www.", "")
-        host = host.replace(":", "-").replace(".", "-")
+        p = _parse_for_slug(url.strip())
+        host = _slug_host(p)
         last = p.path.strip("/").split("/")[-1] if p.path and p.path != "/" else ""
         base = f"{host}-{last}" if last else host
         base = normalize_slug(base)
@@ -155,8 +207,7 @@ def _normalize_netloc_for_compare(scheme: str, netloc: str) -> str:
         userinfo, host_port = "", netloc
 
     host_port = host_port.lower()
-    if host_port.startswith("www."):
-        host_port = host_port[4:]
+    host_port = _strip_leading_www(host_port)
 
     if ":" in host_port:
         host, port_str = host_port.rsplit(":", 1)
@@ -166,9 +217,7 @@ def _normalize_netloc_for_compare(scheme: str, netloc: str) -> str:
             host = host_port  # fallback; keep raw if port invalid
             port = None
         else:
-            default_http = scheme in {"http", ""} and port == 80
-            default_https = scheme == "https" and port == 443
-            if default_http or default_https:
+            if _is_default_web_port(scheme, port):
                 port = None
         host_port = host if port is None else f"{host}:{port}"
 
@@ -202,8 +251,10 @@ def _normalize_path_for_compare(path: str) -> str:
 def _parse_for_compare(raw: str) -> Tuple[ParseResult, str]:
     """Return a parsed URL and canonical scheme for comparison."""
     parsed = urlparse(raw)
-    if parsed.scheme or parsed.netloc or "://" in raw:
+    if parsed.netloc or "://" in raw:
         return parsed, (parsed.scheme or "").lower()
+    if parsed.scheme and not _looks_like_schemeless_host(parsed.scheme):
+        return parsed, parsed.scheme.lower()
 
     candidate = urlparse(f"http://{raw}")
     if candidate.netloc:
@@ -249,7 +300,7 @@ def normalize_url_for_compare(url: str) -> str:
       • Lowercase scheme and host, strip leading "www.".
       • Remove default ports (80 for HTTP, 443 for HTTPS).
       • Collapse redundant slashes and dot segments in the path; ignore trailing "/".
-      • Drop fragments and params; sort query parameters (preserving duplicates).
+      • Drop fragments; preserve params; sort query parameters (preserving duplicates).
       • Ignore scheme differences between HTTP and HTTPS (they map to the same key).
       • Inputs without an explicit scheme fall back to HTTP semantics.
 
