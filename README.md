@@ -275,6 +275,22 @@ bm dedupe [--dry-run] [--json]
 - `--dry-run` prints the planned merges without modifying files
 - `--json` emits a machine-readable summary of the merge actions
 
+URL normalization for duplicate detection:
+
+- Lowercases the scheme/host and strips only a leading `www.` host label.
+- Treats `http://` and `https://` versions of the same URL as equivalent.
+- Removes default ports (`:80` for HTTP/schemeless URLs, `:443` for HTTPS), but preserves
+  non-default ports.
+- Collapses duplicate path slashes, resolves `.`/`..` path segments, and ignores trailing `/`.
+- Drops fragments (`#section`).
+- Preserves path params (`;param`) and userinfo (`user:pass@host`) in the dedupe key.
+- Sorts query parameters while preserving duplicate keys and blank values.
+- Treats host-like schemeless inputs such as `example.com/path` and `localhost:8000/path` as
+  web URLs.
+
+Auto-generated bookmark slugs use similar host/path parsing, but exclude userinfo so credentials
+are not written into filenames.
+
 ### `export` and `import`
 
 Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
