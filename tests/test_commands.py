@@ -131,6 +131,29 @@ class TestCmdAdd:
         assert "title: Example" in content
         assert "tags: [tag1, tag2]" in content
 
+    def test_add_generated_slug_excludes_url_userinfo(self, tmp_path):
+        """Auto-generated filenames must not leak URL credentials/userinfo."""
+        store = tmp_path / "store"
+        store.mkdir()
+        args = MagicMock()
+        args.store = str(store)
+        args.url = "https://user:pass@example.com/path"
+        args.id = None
+        args.path = None
+        args.name = None
+        args.tags = None
+        args.description = None
+        args.force = False
+        args.edit = False
+
+        cmd_add(args)
+
+        files = list(store.glob("*.bm"))
+        assert len(files) == 1
+        assert files[0].name.startswith("example-com-path-")
+        assert "user" not in files[0].name
+        assert "pass" not in files[0].name
+
     def test_add_force_overwrite(self, tmp_path):
         """Should overwrite with --force."""
         store = tmp_path / "store"
