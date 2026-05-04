@@ -1,3 +1,17 @@
+## 0.3.0 (2026-05-03)
+
+### Feat
+
+- **commands**: security hardening, perf, search modes, progress, robustness
+- **cli**: unified filters, search modes, exception handler, completion
+- **security**: tighten path containment in id_to_path
+
+### Fix
+
+- harden URL slug normalization
+- return bool from since filter predicate
+- **io**: block-scalar correctness, faster meta-only reads, refuse symlink dest
+
 ## 0.2.2 (2026-03-08)
 
 ### Fix
