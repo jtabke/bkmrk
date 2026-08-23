@@ -266,6 +266,28 @@ class TestCmdAdd:
             with pytest.raises(SystemExit):
                 cmd_add(args)
 
+    def test_add_rejects_absolute_folder_before_normalizing(self, tmp_path):
+        """An absolute --path must not be silently converted to a slug."""
+        import argparse
+
+        store = tmp_path / "store"
+        store.mkdir()
+        args = argparse.Namespace(
+            store=str(store),
+            url="https://example.com",
+            id=None,
+            path="/outside",
+            name=None,
+            tags=None,
+            description=None,
+            force=False,
+            edit=False,
+        )
+
+        with pytest.raises(SystemExit):
+            cmd_add(args)
+        assert not list(store.glob("*.bm"))
+
 
 class TestResolveIdOrPath:
     """Test resolve_id_or_path function."""
@@ -1765,6 +1787,88 @@ title: Test
         meta, body = load_entry(fpath)
         assert meta["modified"] == new_modified
 
+    def test_edit_uses_temporary_copy_and_preserves_unknown_fields(self, tmp_path):
+        """Editor changes should be staged in a temp copy and retain custom metadata."""
+        store = tmp_path / "store"
+        store.mkdir()
+        fpath = store / "test.bm"
+        fpath.write_text(
+            "---\nurl: https://example.com\ntitle: Original\ncustom: retained\n---\nbody\n"
+        )
+        edited_paths = []
+
+        def fake_editor(path):
+            edited_paths.append(path)
+            assert path != fpath
+            path.write_text(
+                "---\nurl: https://example.com\ntitle: Edited\ncustom: retained\n---\nchanged\n"
+            )
+
+        args = MagicMock(store=str(store), id="test")
+        with patch("bm.commands._launch_editor", side_effect=fake_editor):
+            with patch("bm.commands.iso_now", return_value="2024-01-01T00:00:00+00:00"):
+                cmd_edit(args)
+
+        meta, body = load_entry(fpath)
+        assert meta["title"] == "Edited"
+        assert meta["custom"] == "retained"
+        assert body == "changed\n"
+        assert edited_paths and not edited_paths[0].exists()
+
+    def test_edit_failure_leaves_original_untouched(self, tmp_path):
+        """A failed editor must not alter the live bookmark."""
+        store = tmp_path / "store"
+        store.mkdir()
+        fpath = store / "test.bm"
+        original = "---\nurl: https://example.com\ntitle: Original\n---\nbody\n"
+        fpath.write_text(original)
+
+        args = MagicMock(store=str(store), id="test")
+        with patch("bm.commands._launch_editor", side_effect=OSError("editor failed")):
+            with pytest.raises(OSError, match="editor failed"):
+                cmd_edit(args)
+
+        assert fpath.read_text() == original
+        assert not list(store.glob(".*.edit"))
+
+    def test_edit_invalid_result_leaves_original_untouched(self, tmp_path):
+        """An edited entry without a URL must be rejected before commit."""
+        store = tmp_path / "store"
+        store.mkdir()
+        fpath = store / "test.bm"
+        original = "---\nurl: https://example.com\ntitle: Original\n---\nbody\n"
+        fpath.write_text(original)
+
+        def clear_url(path):
+            path.write_text("---\ntitle: Missing URL\n---\n")
+
+        args = MagicMock(store=str(store), id="test")
+        with patch("bm.commands._launch_editor", side_effect=clear_url):
+            with pytest.raises(SystemExit):
+                cmd_edit(args)
+
+        assert fpath.read_text() == original
+
+    def test_edit_rejects_stale_original(self, tmp_path, capsys):
+        """A concurrent edit must not be overwritten by the editor result."""
+        store = tmp_path / "store"
+        store.mkdir()
+        fpath = store / "test.bm"
+        original = "---\nurl: https://example.com\ntitle: Original\n---\nbody\n"
+        fpath.write_text(original)
+
+        def concurrent_editor(path):
+            path.write_text(original)
+            fpath.write_text("external change\n")
+
+        args = MagicMock(store=str(store), id="test")
+        with patch("bm.commands._launch_editor", side_effect=concurrent_editor):
+            with pytest.raises(SystemExit):
+                cmd_edit(args)
+
+        assert fpath.read_text() == "external change\n"
+        assert "changed since it was read" in capsys.readouterr().err
+
 
 class TestCmdRm:
     """Test cmd_rm function."""
@@ -2488,3 +2592,26 @@ modified: {old_modified}
         # Check that modified was updated
         meta, body = load_entry(fpath)
         assert meta["modified"] == new_modified
+
+    def test_tag_rejects_stale_original(self, tmp_path, monkeypatch, capsys):
+        """Tag updates must not overwrite a file changed after it was read."""
+        import bm.commands as commands_mod
+        from bm.io import atomic_write as real_atomic_write
+
+        store = tmp_path / "store"
+        store.mkdir()
+        fpath = store / "test.bm"
+        fpath.write_text("---\nurl: https://example.com\ntags: [alpha]\n---\n")
+
+        def stale_write(path, data, expected=None):
+            path.write_text("external change\n")
+            return real_atomic_write(path, data, expected=expected)
+
+        monkeypatch.setattr(commands_mod, "atomic_write", stale_write)
+        args = MagicMock(store=str(store), id="test", action="add", tags=["beta"])
+
+        with pytest.raises(SystemExit):
+            cmd_tag(args)
+
+        assert fpath.read_text() == "external change\n"
+        assert "changed since it was read" in capsys.readouterr().err

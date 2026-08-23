@@ -4,9 +4,13 @@ import os
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import FM_END, FM_START
+
+
+class ConcurrentModificationError(OSError):
+    """Raised when a write target changed after it was read."""
 
 
 def _normalize_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,26 +226,77 @@ def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Dict[str, Any], st
     return meta, body
 
 
-def atomic_write(path: Path, data: str) -> None:
-    """Write data to path atomically.
+def _refuse_symlink(path: Path) -> None:
+    """Reject a symlink destination before replacing it."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"refusing to overwrite symlink: {path}")
 
-    Refuses to overwrite an existing symlink at `path` so a planted symlink
-    cannot redirect the write outside the store. (Caller's `id_to_path`
-    verifies parent-path containment; this guards the final dest.)
+
+def _check_expected(path: Path, expected: bytes) -> None:
+    """Raise if ``path`` no longer contains the bytes that were read."""
+    try:
+        current = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ConcurrentModificationError(f"bookmark changed since it was read: {path}") from exc
+    if current != expected:
+        raise ConcurrentModificationError(f"bookmark changed since it was read: {path}")
+
+
+def _fsync_directory(path: Path) -> None:
+    """Best-effort fsync of a containing directory where the platform allows it."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            # Windows and some filesystems do not support syncing directories.
+            pass
+    finally:
+        os.close(directory_fd)
+
+
+def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> None:
+    """Write data to path atomically and, when requested, only if unchanged.
+
+    Refuses to overwrite an existing symlink at ``path`` so a planted symlink
+    cannot redirect the write outside the store. ``expected`` is the byte
+    snapshot read by a caller performing a read/modify/write operation; a
+    mismatch raises :class:`ConcurrentModificationError` and leaves the
+    existing file untouched.
     """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
-        try:
-            st = os.lstat(path)
-        except FileNotFoundError:
-            pass
-        else:
-            if stat.S_ISLNK(st.st_mode):
-                raise OSError(f"refusing to overwrite symlink: {path}")
+        _refuse_symlink(path)
+        if expected is not None:
+            _check_expected(path, expected)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        # Recheck the symlink policy before the final optimistic-content check.
+        # A portable filesystem compare-and-swap is unavailable, so an external
+        # writer can still race the check and replace; callers get conflict
+        # detection for every change observable before this final check.
+        _refuse_symlink(path)
+        if expected is not None:
+            _check_expected(path, expected)
         os.replace(tmp_name, path)
+        _fsync_directory(path.parent)
     except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             os.unlink(tmp_name)
         except OSError:

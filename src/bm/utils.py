@@ -1,6 +1,7 @@
 """Utility functions for the bookmark manager."""
 
 import hashlib
+import ntpath
 import os
 import posixpath
 import re
@@ -56,7 +57,10 @@ def parse_iso(ts: str) -> Optional[datetime]:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", ts):
             dt = datetime.fromisoformat(ts + "T00:00:00")
             return dt.astimezone()  # localize
-        return datetime.fromisoformat(_normalize_iso_z(ts))
+        dt = datetime.fromisoformat(_normalize_iso_z(ts))
+        # Treat full timestamps without offsets as UTC, matching the existing
+        # dedupe normalization policy while ensuring all results are aware.
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
     except Exception:
         return None
 
@@ -80,6 +84,12 @@ def normalize_slug(s: str) -> str:
     return s or "untitled"
 
 
+def _reject_absolute_path(rel: str) -> None:
+    """Reject POSIX and Windows absolute path syntax before normalization."""
+    if rel.startswith(("/", "\\")) or ntpath.isabs(rel):
+        die("absolute paths not allowed")
+
+
 def _reject_unsafe(rel: str) -> str:
     """Reject unsafe path segments.
 
@@ -90,8 +100,7 @@ def _reject_unsafe(rel: str) -> str:
     """
     if "\x00" in rel:
         die("null byte in path not allowed")
-    if rel.startswith("/"):
-        die("absolute paths not allowed")
+    _reject_absolute_path(rel)
     parts = [p for p in rel.split("/") if p]
     for p in parts:
         if p and set(p) == {"."}:
@@ -110,6 +119,10 @@ def is_relative_to(path: Path, base: Path) -> bool:
 
 def id_to_path(store: Path, slug: str) -> Path:
     """Convert slug to a store-relative path; rejects escapes."""
+    # Validate the raw input first: normalize_slug intentionally strips
+    # leading slashes for URL-derived slugs, but user paths must not be
+    # silently reinterpreted as relative paths.
+    _reject_absolute_path(slug)
     slug = normalize_slug(slug)
     slug = _reject_unsafe(slug)
     fpath = store / (slug + FILE_EXT)
@@ -332,10 +345,12 @@ def normalize_url_for_compare(url: str) -> str:
 
 
 def _launch_editor(path: Path) -> None:
-    """Launch editor for the given path."""
+    """Launch the editor and fail if it exits unsuccessfully."""
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if editor:
         cmd = shlex.split(editor) + [str(path)]
     else:
         cmd = ["notepad", str(path)] if os.name == "nt" else ["vi", str(path)]
-    subprocess.call(cmd, shell=False)
+    returncode = subprocess.call(cmd, shell=False)
+    if returncode:
+        raise OSError(f"editor exited with status {returncode}")

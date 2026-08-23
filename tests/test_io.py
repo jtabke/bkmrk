@@ -3,6 +3,7 @@
 import pytest
 
 from bm.io import (
+    ConcurrentModificationError,
     _fmt_tag,
     _normalize_meta,
     atomic_write,
@@ -245,6 +246,62 @@ tags: ["tag,with,comma", normal]
 
         assert target.read_text() == "untouched"
         assert link.is_symlink()
+
+    def test_atomic_write_rejects_stale_expected_contents(self, tmp_path):
+        """Expected-content writes must not overwrite a newer source file."""
+        fpath = tmp_path / "x.bm"
+        fpath.write_text("newer")
+
+        with pytest.raises(ConcurrentModificationError):
+            atomic_write(fpath, "replacement", expected=b"older")
+
+        assert fpath.read_text() == "newer"
+
+    def test_atomic_write_rechecks_after_final_symlink_guard(self, tmp_path, monkeypatch):
+        """A change observable at the final guard must be reported as a conflict."""
+        import bm.io as io_mod
+
+        fpath = tmp_path / "x.bm"
+        fpath.write_text("original")
+        original_guard = io_mod._refuse_symlink
+        calls = 0
+
+        def mutate_during_final_guard(path):
+            nonlocal calls
+            calls += 1
+            original_guard(path)
+            if calls == 2:
+                path.write_text("newer")
+
+        monkeypatch.setattr(io_mod, "_refuse_symlink", mutate_during_final_guard)
+
+        with pytest.raises(ConcurrentModificationError):
+            atomic_write(fpath, "replacement", expected=b"original")
+
+        assert fpath.read_text() == "newer"
+
+    def test_atomic_write_fsyncs_file(self, tmp_path, monkeypatch):
+        """Atomic writes flush the temporary file before replacement."""
+        import bm.io as io_mod
+
+        fsync_calls = []
+        monkeypatch.setattr(io_mod.os, "fsync", lambda fd: fsync_calls.append(fd))
+        monkeypatch.setattr(io_mod, "_fsync_directory", lambda _path: None)
+
+        atomic_write(tmp_path / "x.bm", "content")
+
+        assert len(fsync_calls) == 1
+
+    def test_fsync_directory_is_best_effort(self, tmp_path, monkeypatch):
+        """Directory durability requests a separate fsync when supported."""
+        import bm.io as io_mod
+
+        fsync_calls = []
+        monkeypatch.setattr(io_mod.os, "fsync", lambda fd: fsync_calls.append(fd))
+
+        io_mod._fsync_directory(tmp_path)
+
+        assert len(fsync_calls) == 1
 
     def test_load_entry_meta_only_no_front_matter(self, tmp_path):
         """meta_only on a body-only file must still parse without error."""

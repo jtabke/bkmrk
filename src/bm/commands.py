@@ -14,10 +14,17 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
-from .io import atomic_write, build_text, load_entry, parse_front_matter
+from .io import (
+    ConcurrentModificationError,
+    atomic_write,
+    build_text,
+    load_entry,
+    parse_front_matter,
+)
 from .models import DEFAULT_STORE, FILE_EXT
 from .utils import (
     _launch_editor,
+    _reject_absolute_path,
     _reject_unsafe,
     create_slug_from_url,
     die,
@@ -99,6 +106,8 @@ def cmd_add(args) -> None:
     url = args.url.strip()
     slug = args.id or create_slug_from_url(url)
     if args.path:
+        _reject_absolute_path(args.path)
+        _reject_absolute_path(slug)
         slug = f"{normalize_slug(args.path)}/{normalize_slug(slug)}"
     slug = _reject_unsafe(slug)
     fpath = id_to_path(store, slug)
@@ -508,17 +517,43 @@ def cmd_search(args) -> None:
         sys.exit(1)
 
 
+def _atomic_write_if_unchanged(path: Path, data: str, expected: bytes) -> None:
+    """Write a read/modify/write result without overwriting a newer source."""
+    try:
+        atomic_write(path, data, expected=expected)
+    except ConcurrentModificationError:
+        die("bookmark changed since it was read; refusing to overwrite")
+
+
 def cmd_edit(args) -> None:
-    """Edit bookmark with editor."""
+    """Edit a temporary copy, then atomically commit a validated result."""
     store = Path(args.store or DEFAULT_STORE)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
-    _launch_editor(p)
-    # bump modified timestamp
-    meta, body = load_entry(p)
-    meta["modified"] = iso_now()
-    atomic_write(p, build_text(meta, body))
+
+    original = p.read_bytes()
+    fd, tmp_name = tempfile.mkstemp(
+        dir=p.parent,
+        prefix=f".{p.name}.",
+        suffix=".edit",
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(original)
+        _launch_editor(tmp)
+        edited = tmp.read_text(encoding="utf-8", errors="replace")
+        meta, body = parse_front_matter(edited)
+        if not meta.get("url"):
+            die("url cleared in editor")
+        meta["modified"] = iso_now()
+        _atomic_write_if_unchanged(p, build_text(meta, body), original)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def cmd_rm(args) -> None:
@@ -540,6 +575,7 @@ def cmd_mv(args) -> None:
         die("source not found")
     if src.is_symlink():
         die("refusing to move a symlink")
+    _reject_absolute_path(args.dst)
     dst_slug = normalize_slug(args.dst)
     dst_slug = _reject_unsafe(dst_slug)
     dst = id_to_path(store, dst_slug)
@@ -701,6 +737,7 @@ def cmd_tag(args) -> None:
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
+    original = p.read_bytes()
     meta, body = load_entry(p)
     cur = set(meta.get("tags", []))
     if args.action == "add":
@@ -709,7 +746,7 @@ def cmd_tag(args) -> None:
         cur.difference_update([t.strip() for t in args.tags if t.strip()])
     meta["tags"] = sorted(cur)
     meta["modified"] = iso_now()
-    atomic_write(p, build_text(meta, body))
+    _atomic_write_if_unchanged(p, build_text(meta, body), original)
 
 
 NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -970,6 +1007,7 @@ def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
     Aborts with a disambiguation list when fuzzy matches are not unique.
     """
     token = token.strip()
+    _reject_absolute_path(token)
     slug = normalize_slug(token)
     slug = _reject_unsafe(slug)
     exact = id_to_path(store, slug)

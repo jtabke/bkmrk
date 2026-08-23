@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from bm.utils import (
+    _launch_editor,
     _normalize_netloc_for_compare,
     _normalize_path_for_compare,
     _normalize_query_string,
@@ -73,6 +74,13 @@ class TestParseIso:
         assert dt.hour == 10
         assert dt.minute == 30
         assert dt.second == 45
+
+    def test_naive_full_iso_is_normalized_to_utc(self):
+        """Full timestamps without offsets use the existing UTC policy."""
+        dt = parse_iso("2023-01-15T10:30:45")
+        assert dt is not None
+        assert dt.tzinfo is timezone.utc
+        assert dt.utcoffset() == timedelta(0)
 
     def test_z_suffix(self):
         """Should handle Z suffix."""
@@ -144,6 +152,12 @@ class TestNormalizeSlug:
         """Should reject absolute paths."""
         with pytest.raises(SystemExit):
             _reject_unsafe("/absolute/path")
+
+    @pytest.mark.parametrize("path", [r"C:\\absolute\\path", r"\\\\server\\share\\bookmark"])
+    def test_reject_windows_absolute_path(self, path):
+        """Windows absolute paths must be rejected on every host platform."""
+        with pytest.raises(SystemExit):
+            _reject_unsafe(path)
 
     def test_reject_all_dots_segment(self):
         """Should reject any segment that is entirely dots."""
@@ -347,6 +361,12 @@ class TestIdToPath:
         result = id_to_path(tmp_path, "test-slug")
         assert str(result) == str(tmp_path / "test-slug.bm")
 
+    @pytest.mark.parametrize("slug", ["/absolute/path", r"C:\\absolute\\path"])
+    def test_rejects_raw_absolute_slug_before_normalizing(self, tmp_path, slug):
+        """Absolute slugs must not be silently converted to relative paths."""
+        with pytest.raises(SystemExit):
+            id_to_path(tmp_path, slug)
+
 
 class TestCreateSlugFromUrl:
     """Test create_slug_from_url function."""
@@ -450,6 +470,18 @@ class TestCreateSlugFromUrl:
         """Host ports should keep a dash separator rather than being concatenated."""
         slug = create_slug_from_url("https://example.com:8443/path")
         assert slug.startswith("example-com-8443-path-")
+
+
+class TestLaunchEditor:
+    """Test editor process failure handling."""
+
+    def test_nonzero_exit_is_reported(self, tmp_path, monkeypatch):
+        """A failed editor must prevent callers from committing its output."""
+        monkeypatch.setenv("EDITOR", "fake-editor")
+        monkeypatch.setattr("bm.utils.subprocess.call", lambda *args, **kwargs: 7)
+
+        with pytest.raises(OSError, match="status 7"):
+            _launch_editor(tmp_path / "bookmark.bm")
 
 
 class TestRid:
