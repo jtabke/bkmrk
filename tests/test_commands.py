@@ -1,7 +1,8 @@
 """Unit tests for bm.commands module."""
 
+import argparse
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -32,7 +33,7 @@ class TestCmdInit:
     def test_init_basic(self, tmp_path):
         """Should create store directory."""
         store = tmp_path / "store"
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.git = False
 
@@ -52,7 +53,7 @@ class TestCmdInit:
             return  # POSIX permissions not meaningful
 
         store = tmp_path / "store"
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.git = False
         cmd_init(args)
@@ -65,7 +66,7 @@ class TestCmdInit:
         from bm.commands import _git_cmd
 
         store = tmp_path / "store"
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.git = True
 
@@ -86,7 +87,7 @@ class TestCmdInit:
         from bm.commands import _git_cmd
 
         store = tmp_path / "store"
-        args = MagicMock(store=str(store), git=True)
+        args = argparse.Namespace(store=str(store), git=True)
         error = subprocess.CalledProcessError(returncode=7, cmd=_git_cmd("init"))
 
         with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
@@ -100,7 +101,7 @@ class TestCmdInit:
         from bm.commands import _git_cmd
 
         store = tmp_path / "store"
-        args = MagicMock(store=str(store), git=True)
+        args = argparse.Namespace(store=str(store), git=True)
         error = subprocess.TimeoutExpired(_git_cmd("init"), timeout=30)
 
         with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
@@ -112,7 +113,7 @@ class TestCmdInit:
     def test_init_without_git_does_not_call_git(self, tmp_path):
         """Should not call git if not requested."""
         store = tmp_path / "store"
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.git = False
 
@@ -125,7 +126,7 @@ class TestCmdInit:
         """The default store must be resolved from the environment at call time."""
         first_store = tmp_path / "first"
         second_store = tmp_path / "second"
-        args = MagicMock(store=None, git=False)
+        args = argparse.Namespace(store=None, git=False)
 
         monkeypatch.setenv("BOOKMARKS_DIR", str(first_store))
         cmd_init(args)
@@ -143,7 +144,7 @@ class TestCmdAdd:
         """Should create bookmark file."""
         store = tmp_path / "store"
         store.mkdir()
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.url = "https://example.com"
         args.id = None
@@ -201,7 +202,7 @@ class TestCmdAdd:
         """Auto-generated filenames must not leak URL credentials/userinfo."""
         store = tmp_path / "store"
         store.mkdir()
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.url = "https://user:pass@example.com/path"
         args.id = None
@@ -224,7 +225,7 @@ class TestCmdAdd:
         """Should overwrite with --force."""
         store = tmp_path / "store"
         store.mkdir()
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.url = "https://example.com"
         args.id = None
@@ -371,7 +372,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = "www.example.com"
         args.tag = None
@@ -396,7 +397,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = "example.com"
         args.tag = None
@@ -422,7 +423,7 @@ created: 2023-01-15
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = None
         args.tag = None
@@ -448,7 +449,7 @@ created: 2023-01-15T10:00:00Z
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = None
         args.tag = None
@@ -485,7 +486,7 @@ created: 2023-01-16T10:00:00Z
         fpath2 = store / "b.bm"
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = None
         args.tag = None
@@ -531,7 +532,7 @@ created: 2023-01-16T10:00:00Z
         fpath2 = store / "b.bm"
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.host = None
         args.tag = None
@@ -597,7 +598,7 @@ tags: [python, tutorial]
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.query = "python tutorial"
         args.json = False
@@ -621,7 +622,7 @@ tags: [python]
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.query = "python tutorial"
         args.json = False
@@ -658,7 +659,7 @@ created: 2023-01-16T10:00:00Z
         fpath2 = store / "b.bm"
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.query = "python"
         args.json = True
@@ -702,7 +703,7 @@ created: 2023-01-16T10:00:00Z
         fpath2 = store / "b.bm"
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.query = "python"
         args.json = False
@@ -743,7 +744,7 @@ class TestCmdImport:
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -798,7 +799,7 @@ class TestCmdImport:
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -825,7 +826,7 @@ class TestCmdImport:
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -856,7 +857,7 @@ class TestCmdImport:
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -892,7 +893,7 @@ class TestCmdImport:
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -936,7 +937,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -976,7 +977,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -1004,7 +1005,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -1036,7 +1037,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -1080,7 +1081,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -1136,7 +1137,7 @@ title: Existing
         netscape_file = tmp_path / "bookmarks.html"
         netscape_file.write_text(netscape_content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.file = str(netscape_file)
@@ -1172,7 +1173,7 @@ created: 2023-01-15T10:00:00Z
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.host = None
@@ -1215,7 +1216,7 @@ modified: 2023-01-15T10:00:00Z
         fpath2 = store / "a.bm"  # Will sort before b
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "json"
         args.host = None
@@ -1500,7 +1501,7 @@ created: 2023-01-17T10:00:00Z
 """
         (store / "root.bm").write_text(content3)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.fmt = "netscape"
         args.host = None
@@ -1604,7 +1605,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1627,7 +1628,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1647,7 +1648,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1709,7 +1710,7 @@ This is the body content.
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1739,7 +1740,7 @@ This is the body content.
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1769,7 +1770,7 @@ title: Example Title
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1802,7 +1803,7 @@ modified: {old_modified}
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1831,7 +1832,7 @@ title: Test
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1863,7 +1864,7 @@ title: Test
                 "---\nurl: https://example.com\ntitle: Edited\ncustom: retained\n---\nchanged\n"
             )
 
-        args = MagicMock(store=str(store), id="test")
+        args = argparse.Namespace(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=fake_editor):
             with patch("bm.commands.iso_now", return_value="2024-01-01T00:00:00+00:00"):
                 cmd_edit(args)
@@ -1882,7 +1883,7 @@ title: Test
         original = "---\nurl: https://example.com\ntitle: Original\n---\nbody\n"
         fpath.write_text(original)
 
-        args = MagicMock(store=str(store), id="test")
+        args = argparse.Namespace(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=OSError("editor failed")):
             with pytest.raises(OSError, match="editor failed"):
                 cmd_edit(args)
@@ -1901,7 +1902,7 @@ title: Test
         def clear_url(path):
             path.write_text("---\ntitle: Missing URL\n---\n")
 
-        args = MagicMock(store=str(store), id="test")
+        args = argparse.Namespace(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=clear_url):
             with pytest.raises(BmError):
                 cmd_edit(args)
@@ -1920,7 +1921,7 @@ title: Test
             path.write_text(original)
             fpath.write_text("external change\n")
 
-        args = MagicMock(store=str(store), id="test")
+        args = argparse.Namespace(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=concurrent_editor):
             with pytest.raises(ConflictError):
                 cmd_edit(args)
@@ -1938,7 +1939,7 @@ class TestCmdRm:
         fpath = store / "test.bm"
         fpath.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1956,7 +1957,7 @@ class TestCmdRm:
         fpath = nested_dir / "test.bm"
         fpath.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "folder/subfolder/test"
 
@@ -1975,7 +1976,7 @@ class TestCmdRm:
         fpath = store / "test.bm"
         fpath.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
 
@@ -1997,7 +1998,7 @@ class TestCmdMv:
         src_path = store / "old.bm"
         src_path.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "old"
         args.dst = "new"
@@ -2022,7 +2023,7 @@ class TestCmdMv:
         src_path = store / "old.bm"
         src_path.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "old"
         args.dst = "folder/subfolder/new"
@@ -2043,7 +2044,7 @@ class TestCmdMv:
         dst_path = store / "existing.bm"
         dst_path.write_text("existing content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "old"
         args.dst = "existing"
@@ -2066,7 +2067,7 @@ class TestCmdMv:
         dst_path = store / "existing.bm"
         dst_path.write_text("existing content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "old"
         args.dst = "existing"
@@ -2087,7 +2088,7 @@ class TestCmdMv:
         src_path = store / "old.bm"
         src_path.write_text("content")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "old"
         args.dst = "../../../outside"
@@ -2108,7 +2109,7 @@ class TestCmdMv:
         link = store / "linked.bm"
         link.symlink_to(target)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "linked"
         args.dst = "elsewhere"
@@ -2127,7 +2128,7 @@ class TestCmdMv:
         src_dir.mkdir(parents=True)
         (src_dir / "x.bm").write_text("---\nurl: https://x.example.com\n---\n")
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.src = "dev/python/x"
         args.dst = "news/x"
@@ -2169,7 +2170,7 @@ tags: [documentation, web]
         fpath2 = other_dir / "docs.bm"
         fpath2.write_text(content2)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         cmd_tags(args)
@@ -2196,7 +2197,7 @@ tags: [zebra, alpha, zebra]
         fpath.parent.mkdir(parents=True)
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         cmd_tags(args)
@@ -2243,7 +2244,7 @@ Secondary notes
 """
         )
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.dry_run = False
         args.json = False
@@ -2292,7 +2293,7 @@ url: http://example.com/
 """
         )
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.dry_run = True
         args.json = False
@@ -2324,7 +2325,7 @@ url: http://example.com
 """
         )
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.dry_run = True
         args.json = True
@@ -2427,7 +2428,7 @@ class TestCmdSync:
         store = tmp_path / "store"
         store.mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         with pytest.raises(BmError) as exc_info:
@@ -2443,14 +2444,14 @@ class TestCmdSync:
         # Create .git directory to simulate git repo
         (store / ".git").mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         with patch("subprocess.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(returncode=0),  # git add
-                MagicMock(returncode=0),  # git commit
-                MagicMock(returncode=1),  # rev-parse -> no upstream
+                subprocess.CompletedProcess([], 0),  # git add
+                subprocess.CompletedProcess([], 0),  # git commit
+                subprocess.CompletedProcess([], 1),  # rev-parse -> no upstream
             ]
             cmd_sync(args)
 
@@ -2470,7 +2471,7 @@ class TestCmdSync:
         store.mkdir()
         (store / ".git").mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         rev_parse = _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -2478,8 +2479,8 @@ class TestCmdSync:
 
             def mock_return(*args, **kwargs):
                 if args[0] == rev_parse:
-                    return MagicMock(returncode=0)
-                return MagicMock(returncode=0)
+                    return subprocess.CompletedProcess(args[0], 0)
+                return subprocess.CompletedProcess(args[0], 0)
 
             mock_run.side_effect = mock_return
             cmd_sync(args)
@@ -2496,7 +2497,7 @@ class TestCmdSync:
         store.mkdir()
         (store / ".git").mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         rev_parse = _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -2505,8 +2506,8 @@ class TestCmdSync:
 
             def mock_return(*args, **kwargs):
                 if args[0] == rev_parse:
-                    return MagicMock(returncode=1)
-                return MagicMock(returncode=0)
+                    return subprocess.CompletedProcess(args[0], 1)
+                return subprocess.CompletedProcess(args[0], 0)
 
             mock_run.side_effect = mock_return
             cmd_sync(args)
@@ -2523,7 +2524,7 @@ class TestCmdSync:
         store.mkdir()
         (store / ".git").mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         with patch("subprocess.run") as mock_run:
@@ -2545,11 +2546,11 @@ class TestCmdSync:
         store.mkdir()
         (store / ".git").mkdir()
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
 
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+            mock_run.return_value = subprocess.CompletedProcess([], 0)
             cmd_sync(args)
 
         for call in mock_run.call_args_list:
@@ -2578,7 +2579,7 @@ class TestCmdSync:
         store = tmp_path / "store"
         store.mkdir()
         (store / ".git").mkdir()
-        args = MagicMock(store=str(store))
+        args = argparse.Namespace(store=str(store))
         error = subprocess.TimeoutExpired(_git_cmd("push"), timeout=30)
 
         with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
@@ -2604,7 +2605,7 @@ tags: [beta, alpha]
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
         args.action = "add"
@@ -2629,7 +2630,7 @@ tags: [alpha, beta, gamma]
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
         args.action = "rm"
@@ -2656,7 +2657,7 @@ modified: {old_modified}
         fpath = store / "test.bm"
         fpath.write_text(content)
 
-        args = MagicMock()
+        args = argparse.Namespace()
         args.store = str(store)
         args.id = "test"
         args.action = "add"
@@ -2687,7 +2688,7 @@ modified: {old_modified}
             return real_write(store, path, data, expected=expected)
 
         monkeypatch.setattr(Store, "write", stale_write)
-        args = MagicMock(store=str(store), id="test", action="add", tags=["beta"])
+        args = argparse.Namespace(store=str(store), id="test", action="add", tags=["beta"])
 
         with pytest.raises(ConflictError):
             cmd_tag(args)
