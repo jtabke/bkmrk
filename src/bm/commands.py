@@ -11,24 +11,19 @@ import textwrap
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
-from .io import (
-    ConcurrentModificationError,
-    atomic_write,
-    build_text,
-    load_entry,
-    parse_front_matter,
-)
-from .models import DEFAULT_STORE, FILE_EXT
+from .errors import UnsafePathError
+from .io import build_text, load_entry, parse_front_matter
+from .models import FILE_EXT, default_store
+from .store import Store
 from .utils import (
     _launch_editor,
     _reject_absolute_path,
     _reject_unsafe,
     create_slug_from_url,
     die,
-    id_to_path,
     iso_now,
     normalize_slug,
     normalize_url_for_compare,
@@ -40,6 +35,16 @@ from .utils import (
 ALLOWED_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps", "mailto"})
 
 _PROGRESS_EVERY = 500
+
+
+def _store_from_args(args) -> Store:
+    """Resolve one concrete store from explicit CLI input or live environment."""
+    return Store(Path(args.store) if args.store else default_store())
+
+
+def _require_store(store: Store, message: str) -> None:
+    """Require an existing store and let the CLI render domain errors."""
+    store.require_exists(message)
 
 
 def _progress_tick(label: str, count: int) -> None:
@@ -63,16 +68,16 @@ def cmd_init(args) -> None:
     Args:
         args: Parsed command line arguments.
     """
-    store = Path(args.store or DEFAULT_STORE)
-    store.mkdir(parents=True, exist_ok=True, mode=0o700)
-    print(f"Initialized store at: {store}")
+    store = _store_from_args(args)
+    store.create()
+    print(f"Initialized store at: {store.root}")
     if args.git:
-        if (store / ".git").exists():
+        if (store.root / ".git").exists():
             print("Git repo already exists.")
         else:
-            _run_git(store, "init")
+            _run_git(store.root, "init")
             print("Initialized git repository.")
-    readme = store / "README.txt"
+    readme = store.root / "README.txt"
     if not readme.exists():
         readme.write_text(
             textwrap.dedent(f"""\
@@ -100,9 +105,8 @@ def cmd_init(args) -> None:
 
 def cmd_add(args) -> None:
     """Add a new bookmark."""
-    store = Path(args.store or DEFAULT_STORE)
-    if not store.exists():
-        die(f"store not found: {store}. Run `bm init` first.")
+    store = _store_from_args(args)
+    _require_store(store, f"store not found: {store.root}. Run `bm init` first.")
     url = args.url.strip()
     slug = args.id or create_slug_from_url(url)
     if args.path:
@@ -110,10 +114,10 @@ def cmd_add(args) -> None:
         _reject_absolute_path(slug)
         slug = f"{normalize_slug(args.path)}/{normalize_slug(slug)}"
     slug = _reject_unsafe(slug)
-    fpath = id_to_path(store, slug)
+    fpath = store.path_for(slug)
     if fpath.exists() and not args.force:
         die(f"bookmark exists: {slug} (use --force to overwrite)")
-    fpath.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    store.ensure_parent(fpath)
 
     meta = {
         "url": url,
@@ -153,18 +157,18 @@ def cmd_add(args) -> None:
                 file=sys.stderr,
             )
 
-    atomic_write(fpath, build_text(meta, body))
+    store.write(fpath, build_text(meta, body))
     print(rid(meta.get("url", "")))
 
 
 def cmd_show(args) -> None:
     """Show a bookmark entry."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
     assert p is not None
-    rel = p.relative_to(store).with_suffix("")
+    rel = p.relative_to(store.root).with_suffix("")
     print(f"# {rel}")
     meta, body = load_entry(p)
     for k in ["url", "title", "tags", "created", "modified"]:
@@ -179,7 +183,7 @@ def cmd_show(args) -> None:
 
 def cmd_open(args) -> None:
     """Open bookmark in browser."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
@@ -196,22 +200,27 @@ def cmd_open(args) -> None:
         print("bm: warning: system did not acknowledge opening browser", file=sys.stderr)
 
 
-def _iter_entries(
-    store: Path, meta_only: bool = False
-) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
-    """Iterate over all entries. If meta_only, skip body parsing.
+def _coerce_store(value: Union[Store, Path, str]) -> Store:
+    """Accept the concrete boundary while retaining private helper compatibility."""
+    return value if isinstance(value, Store) else Store(value)
 
-    Files that fail to load (OSError, decode errors, malformed front matter)
-    are skipped with a stderr warning rather than aborting the iteration.
+
+def _iter_entries(
+    store: Union[Store, Path, str], meta_only: bool = False, snapshot: bool = False
+) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
+    """Iterate over entries through the store boundary.
+
+    Files that fail to load are skipped with the established stderr warning.
+    Snapshot-aware callers should use ``Store.iter_entries`` directly so the
+    precondition bytes remain attached to each :class:`StoreEntry`.
     """
-    for p in store.rglob(f"*{FILE_EXT}"):
-        rel = p.relative_to(store).with_suffix("")
-        try:
-            meta, body = load_entry(p, meta_only=meta_only)
-        except (OSError, ValueError, UnicodeError) as exc:
-            print(f"bm: skipping {rel}: {exc}", file=sys.stderr)
-            continue
-        yield p, rel, meta, body
+    fs_store = _coerce_store(store)
+
+    def warn(relative: Path, exc: Exception) -> None:
+        print(f"bm: skipping {relative}: {exc}", file=sys.stderr)
+
+    for entry in fs_store.iter_entries(meta_only=meta_only, snapshot=snapshot, on_error=warn):
+        yield entry.path, entry.relative_path, entry.meta, entry.body
 
 
 def _matches_tag(rel, meta, tag):
@@ -293,13 +302,6 @@ def _entry_score(entry: Dict[str, Any]) -> Tuple[int, int, float, str]:
 
 def _select_survivor(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     return min(entries, key=_entry_score)
-
-
-def _prune_empty_dirs(store: Path, start: Path) -> None:
-    cur = start
-    while cur != store and cur.exists() and not any(cur.iterdir()):
-        cur.rmdir()
-        cur = cur.parent
 
 
 def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
@@ -441,9 +443,8 @@ def _output_rows(rows: List[dict], args):
 
 def cmd_list(args) -> None:
     """List bookmarks."""
-    store = Path(args.store or DEFAULT_STORE)
-    if not store.exists():
-        die(f"store not found: {store}")
+    store = _store_from_args(args)
+    _require_store(store, f"store not found: {store.root}")
     rows = _collect_rows(store, args)
     _output_rows(rows, args)
 
@@ -479,7 +480,7 @@ def _make_search_predicate(query: str, use_regex: bool):
 
 def cmd_search(args) -> None:
     """Search bookmarks."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     fields_arg = getattr(args, "field", None)
     fields = (
         tuple(fields_arg)
@@ -517,22 +518,14 @@ def cmd_search(args) -> None:
         sys.exit(1)
 
 
-def _atomic_write_if_unchanged(path: Path, data: str, expected: bytes) -> None:
-    """Write a read/modify/write result without overwriting a newer source."""
-    try:
-        atomic_write(path, data, expected=expected)
-    except ConcurrentModificationError:
-        die("bookmark changed since it was read; refusing to overwrite")
-
-
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
 
-    original = p.read_bytes()
+    original = store.snapshot(p)
     fd, tmp_name = tempfile.mkstemp(
         dir=p.parent,
         prefix=f".{p.name}.",
@@ -548,7 +541,7 @@ def cmd_edit(args) -> None:
         if not meta.get("url"):
             die("url cleared in editor")
         meta["modified"] = iso_now()
-        _atomic_write_if_unchanged(p, build_text(meta, body), original)
+        store.write(p, build_text(meta, body), expected=original)
     finally:
         try:
             tmp.unlink()
@@ -558,42 +551,36 @@ def cmd_edit(args) -> None:
 
 def cmd_rm(args) -> None:
     """Remove bookmark."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
     assert p is not None
-    p.unlink()
-    _prune_empty_dirs(store, p.parent)
+    store.delete(p, expected=store.snapshot(p))
 
 
 def cmd_mv(args) -> None:
     """Move/rename bookmark."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     src = resolve_id_or_path(store, args.src)
     if not src:
         die("source not found")
-    if src.is_symlink():
-        die("refusing to move a symlink")
     _reject_absolute_path(args.dst)
     dst_slug = normalize_slug(args.dst)
     dst_slug = _reject_unsafe(dst_slug)
-    dst = id_to_path(store, dst_slug)
-    dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if dst.exists() and not args.force:
-        die("destination exists (use --force)")
-    src_parent = src.parent
+    dst = store.path_for(dst_slug)
     try:
-        os.replace(src, dst)
+        store.move(src, dst, expected=store.snapshot(src), force=args.force)
+    except FileExistsError:
+        die("destination exists (use --force)")
     except OSError as exc:
         die(f"move failed: {exc}")
-    _prune_empty_dirs(store, src_parent)
-    print(dst.relative_to(store).with_suffix(""))
+    print(dst.relative_to(store.root).with_suffix(""))
 
 
 def cmd_tags(args) -> None:
     """List all tags."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     folder_tags = set()
     header_tags = set()
     for _, rel, meta, _ in _iter_entries(store, meta_only=True):
@@ -606,7 +593,7 @@ def cmd_tags(args) -> None:
 
 def cmd_dirs(args) -> None:
     """List known directory prefixes."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     dirs = set()
     for _, rel, _, _ in _iter_entries(store, meta_only=True):
         # Add all parent directories
@@ -621,16 +608,27 @@ def cmd_dirs(args) -> None:
             print(d)
 
 
-def _group_entries_by_url(store: Path) -> Dict[str, List[Dict[str, Any]]]:
+def _group_entries_by_url(store: Union[Store, Path, str]) -> Dict[str, List[Dict[str, Any]]]:
+    fs_store = _coerce_store(store)
     buckets: Dict[str, List[Dict[str, Any]]] = {}
     n = 0
-    for path, rel, meta, body in _iter_entries(store):
-        url = meta.get("url", "").strip()
+
+    def warn(relative: Path, exc: Exception) -> None:
+        print(f"bm: skipping {relative}: {exc}", file=sys.stderr)
+
+    for entry in fs_store.iter_entries(snapshot=True, on_error=warn):
+        url = entry.meta.get("url", "").strip()
         key = normalize_url_for_compare(url)
         if not key:
             continue
         buckets.setdefault(key, []).append(
-            {"path": path, "rel": rel, "meta": dict(meta), "body": body}
+            {
+                "path": entry.path,
+                "rel": entry.relative_path,
+                "meta": dict(entry.meta),
+                "body": entry.body,
+                "snapshot": entry.snapshot,
+            }
         )
         n += 1
         _progress_tick("dedupe scanning", n)
@@ -639,28 +637,30 @@ def _group_entries_by_url(store: Path) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def _write_merged_entry(
-    survivor: Dict[str, Any], merged_meta: Dict[str, Any], merged_body: str, tags: List[str]
+    store: Store,
+    survivor: Dict[str, Any],
+    merged_meta: Dict[str, Any],
+    merged_body: str,
+    tags: List[str],
 ) -> None:
     merged_meta_for_write = dict(merged_meta)
     merged_meta_for_write["tags"] = tags
     if not merged_meta_for_write.get("modified"):
         merged_meta_for_write["modified"] = iso_now()
-    atomic_write(survivor["path"], build_text(merged_meta_for_write, merged_body))
+    data = build_text(merged_meta_for_write, merged_body)
+    store.write(survivor["path"], data, expected=survivor["snapshot"])
     survivor["meta"] = merged_meta_for_write
     survivor["body"] = merged_body
+    survivor["snapshot"] = data.encode("utf-8")
 
 
-def _remove_group_entries(store: Path, entries: List[Dict[str, Any]]) -> None:
+def _remove_group_entries(store: Store, entries: List[Dict[str, Any]]) -> None:
     for entry in entries:
-        try:
-            entry["path"].unlink()
-        except FileNotFoundError:
-            continue
-        _prune_empty_dirs(store, entry["path"].parent)
+        store.delete(entry["path"], expected=entry["snapshot"])
 
 
 def _process_duplicate_group(
-    store: Path, canonical: str, group: List[Dict[str, Any]], dry_run: bool
+    store: Store, canonical: str, group: List[Dict[str, Any]], dry_run: bool
 ) -> Dict[str, Any]:
     survivor = _select_survivor(group)
     (
@@ -690,16 +690,20 @@ def _process_duplicate_group(
         action["dry_run"] = True
         return action
 
-    _write_merged_entry(survivor, merged_meta, merged_body, tags)
+    # Validate the complete scan snapshot before changing any member. Each
+    # subsequent mutation repeats its own precondition check, so a redundant
+    # entry changed after this pass is reported rather than silently deleted.
+    for entry in group:
+        store.verify(entry["path"], entry["snapshot"])
+    _write_merged_entry(store, survivor, merged_meta, merged_body, tags)
     _remove_group_entries(store, removed_entries)
     return action
 
 
 def cmd_dedupe(args) -> None:
     """Merge duplicate bookmarks based on normalized URLs."""
-    store = Path(args.store or DEFAULT_STORE)
-    if not store.exists():
-        die(f"store not found: {store}")
+    store = _store_from_args(args)
+    _require_store(store, f"store not found: {store.root}")
 
     buckets = _group_entries_by_url(store)
     dry_run = bool(getattr(args, "dry_run", False))
@@ -733,11 +737,11 @@ def cmd_dedupe(args) -> None:
 
 def cmd_tag(args) -> None:
     """Add or remove tags."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     p = resolve_id_or_path(store, args.id)
     if not p:
         die("not found")
-    original = p.read_bytes()
+    original = store.snapshot(p)
     meta, body = load_entry(p)
     cur = set(meta.get("tags", []))
     if args.action == "add":
@@ -746,7 +750,7 @@ def cmd_tag(args) -> None:
         cur.difference_update([t.strip() for t in args.tags if t.strip()])
     meta["tags"] = sorted(cur)
     meta["modified"] = iso_now()
-    _atomic_write_if_unchanged(p, build_text(meta, body), original)
+    store.write(p, build_text(meta, body), expected=original)
 
 
 NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -824,7 +828,7 @@ def _export_row(rel, meta) -> Dict[str, Any]:
 
 def cmd_export(args) -> None:
     """Export bookmarks."""
-    store = Path(args.store or DEFAULT_STORE)
+    store = _store_from_args(args)
     tag, host, path, since_dt = _resolve_filter_args(args)
     if args.fmt == "netscape":
         entries = []
@@ -911,8 +915,8 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
 
 def cmd_import(args) -> None:
     """Import bookmarks from Netscape HTML."""
-    store = Path(args.store or DEFAULT_STORE)
-    store.mkdir(parents=True, exist_ok=True, mode=0o700)
+    store = _store_from_args(args)
+    store.create()
     text = Path(args.file).read_text(encoding="utf-8", errors="replace")
     entries = _parse_netscape_html(text)
     skipped_scheme = 0
@@ -926,14 +930,13 @@ def cmd_import(args) -> None:
         slug = create_slug_from_url(meta["url"])
         full_path = f"{path}/{slug}" if path else slug
         try:
-            fpath = id_to_path(store, full_path)
-        except SystemExit:
+            fpath = store.path_for(full_path)
+        except UnsafePathError:
             skipped_unsafe += 1
             continue
         if fpath.exists() and not args.force:
             continue
-        fpath.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        atomic_write(fpath, build_text(meta, ""))
+        store.write(fpath, build_text(meta, ""))
         written += 1
         _progress_tick("import", written)
     _progress_done("import", written)
@@ -1024,16 +1027,16 @@ def _run_git(
 
 def cmd_sync(args) -> None:
     """Sync with git."""
-    store = Path(args.store or DEFAULT_STORE)
-    if not (store / ".git").exists():
+    store = _store_from_args(args)
+    if not (store.root / ".git").exists():
         die("store is not a git repo; run: bm init --git", code=2)
 
-    _run_git(store, "add", "-A")
-    _run_git(store, "commit", "-m", "bm sync", "--allow-empty")
+    _run_git(store.root, "add", "-A")
+    _run_git(store.root, "commit", "-m", "bm sync", "--allow-empty")
     # A nonzero rev-parse means no upstream is configured; it is expected and
     # should not be reported as a sync failure.
     upstream = _run_git(
-        store,
+        store.root,
         "rev-parse",
         "--abbrev-ref",
         "--symbolic-full-name",
@@ -1042,38 +1045,9 @@ def cmd_sync(args) -> None:
         capture_output=True,
     )
     if upstream.returncode == 0:
-        _run_git(store, "push")
+        _run_git(store.root, "push")
 
 
-def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
-    """Accept either a stable ID (by URL) or a path-ish token.
-
-    Priority: exact path > unique fuzzy filename match > rid (URL hash) match.
-    Aborts with a disambiguation list when fuzzy matches are not unique.
-    """
-    token = token.strip()
-    _reject_absolute_path(token)
-    slug = normalize_slug(token)
-    slug = _reject_unsafe(slug)
-    exact = id_to_path(store, slug)
-    if exact.exists():
-        return exact
-
-    name = Path(slug).name
-    fuzzy = [p for p in store.rglob(f"*{FILE_EXT}") if name in p.stem]
-    if len(fuzzy) == 1:
-        return fuzzy[0]
-    if len(fuzzy) > 1:
-        listing = "\n  ".join(str(p.relative_to(store).with_suffix("")) for p in sorted(fuzzy))
-        die(f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}")
-
-    # Last resort: ID match by URL hash (requires reading files).
-    for p in store.rglob(f"*{FILE_EXT}"):
-        try:
-            meta, _ = load_entry(p, meta_only=True)
-        except (OSError, ValueError, UnicodeError):
-            continue
-        url = meta.get("url", "")
-        if url and rid(url) == token:
-            return p
-    return None
+def resolve_id_or_path(store: Union[Store, Path, str], token: str) -> Optional[Path]:
+    """Compatibility wrapper for the concrete store resolver."""
+    return _coerce_store(store).resolve(token)

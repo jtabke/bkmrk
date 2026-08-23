@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from bm.errors import UnsafePathError
 from bm.utils import (
     _launch_editor,
     _normalize_netloc_for_compare,
@@ -145,29 +146,29 @@ class TestNormalizeSlug:
 
     def test_reject_dot_dot(self):
         """Should reject paths with .."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             _reject_unsafe("../escape")
 
     def test_reject_absolute_path(self):
         """Should reject absolute paths."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             _reject_unsafe("/absolute/path")
 
     @pytest.mark.parametrize("path", [r"C:\\absolute\\path", r"\\\\server\\share\\bookmark"])
     def test_reject_windows_absolute_path(self, path):
         """Windows absolute paths must be rejected on every host platform."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             _reject_unsafe(path)
 
     def test_reject_all_dots_segment(self):
         """Should reject any segment that is entirely dots."""
         for s in ["...", "....", "a/.../b"]:
-            with pytest.raises(SystemExit):
+            with pytest.raises(UnsafePathError):
                 _reject_unsafe(s)
 
     def test_reject_null_byte(self):
         """Should reject NUL byte in any segment."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             _reject_unsafe("a/b\x00c")
 
     def test_accept_leading_dot_segment(self):
@@ -323,13 +324,13 @@ class TestRejectUnsafe:
         assert _reject_unsafe("hello/world") == "hello/world"
 
     def test_dot_dot(self):
-        """Should die for .. in path."""
-        with pytest.raises(SystemExit):
+        """Should reject .. in a path."""
+        with pytest.raises(UnsafePathError):
             _reject_unsafe("hello/../world")
 
     def test_absolute(self):
-        """Should die for absolute paths."""
-        with pytest.raises(SystemExit):
+        """Should reject absolute paths."""
+        with pytest.raises(UnsafePathError):
             _reject_unsafe("/absolute/path")
 
 
@@ -364,7 +365,7 @@ class TestIdToPath:
     @pytest.mark.parametrize("slug", ["/absolute/path", r"C:\\absolute\\path"])
     def test_rejects_raw_absolute_slug_before_normalizing(self, tmp_path, slug):
         """Absolute slugs must not be silently converted to relative paths."""
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             id_to_path(tmp_path, slug)
 
 

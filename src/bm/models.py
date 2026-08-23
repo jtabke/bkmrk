@@ -3,10 +3,17 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
-DEFAULT_STORE = Path(os.environ.get("BOOKMARKS_DIR", str(Path.home() / ".bookmarks.d")))
 FILE_EXT = ".bm"
+
+
+def default_store(environ: Optional[Mapping[str, str]] = None) -> Path:
+    """Return the configured default store, resolving the environment at call time."""
+    values = os.environ if environ is None else environ
+    return Path(values.get("BOOKMARKS_DIR", str(Path.home() / ".bookmarks.d")))
+
+
 FM_START = "---\n"
 FM_END = "---\n"
 

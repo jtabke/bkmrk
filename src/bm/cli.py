@@ -23,6 +23,7 @@ from .commands import (
     cmd_tag,
     cmd_tags,
 )
+from .errors import BmError
 
 
 def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
@@ -172,6 +173,9 @@ def main() -> None:
     except BrokenPipeError:
         # Downstream pipe closed (e.g. `bm list | head`). Quiet success.
         sys.exit(0)
+    except BmError as exc:
+        print(f"bm: {exc}", file=sys.stderr)
+        sys.exit(exc.exit_code)
     except SystemExit:
         raise
     except Exception as exc:

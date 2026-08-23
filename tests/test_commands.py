@@ -23,6 +23,7 @@ from bm.commands import (
     cmd_tags,
     resolve_id_or_path,
 )
+from bm.errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
 from bm.io import load_entry
 
 
@@ -121,19 +122,19 @@ class TestCmdInit:
 
         mock_run.assert_not_called()
 
-    def test_init_uses_default_store_when_none(self, tmp_path, monkeypatch):
-        """Should use DEFAULT_STORE when --store is None."""
-        fake_store = tmp_path / "default_store"
-        monkeypatch.setattr("bm.commands.DEFAULT_STORE", fake_store)
+    def test_init_uses_live_environment_default_store(self, tmp_path, monkeypatch):
+        """The default store must be resolved from the environment at call time."""
+        first_store = tmp_path / "first"
+        second_store = tmp_path / "second"
+        args = MagicMock(store=None, git=False)
 
-        args = MagicMock()
-        args.store = None  # No --store provided
-        args.git = False
-
+        monkeypatch.setenv("BOOKMARKS_DIR", str(first_store))
+        cmd_init(args)
+        monkeypatch.setenv("BOOKMARKS_DIR", str(second_store))
         cmd_init(args)
 
-        assert fake_store.exists()
-        assert fake_store.is_dir()
+        assert first_store.is_dir()
+        assert second_store.is_dir()
 
 
 class TestCmdAdd:
@@ -319,7 +320,7 @@ class TestCmdAdd:
             edit=False,
         )
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             cmd_add(args)
         assert not list(store.glob("*.bm"))
 
@@ -390,19 +391,19 @@ url: https://different.com/page1-suffix
         result = resolve_id_or_path(store, bookmark_id)
         assert result == fpath1
 
-    def test_resolve_fuzzy_ambiguous_dies(self, tmp_path, capsys):
-        """Should abort with disambiguation list when fuzzy match is not unique."""
+    def test_resolve_fuzzy_ambiguous_raises_domain_error(self, tmp_path):
+        """Ambiguous resolution must remain presentation-free below the CLI."""
         store = tmp_path / "store"
         store.mkdir()
         (store / "prefix-suffix.bm").write_text("---\nurl: https://example1.com\n---\n")
         (store / "other-suffix.bm").write_text("---\nurl: https://example2.com\n---\n")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(AmbiguousEntryError) as exc_info:
             resolve_id_or_path(store, "suffix")
-        captured = capsys.readouterr()
-        assert "ambiguous" in captured.err
-        assert "prefix-suffix" in captured.err
-        assert "other-suffix" in captured.err
+        message = str(exc_info.value)
+        assert "ambiguous" in message
+        assert "prefix-suffix" in message
+        assert "other-suffix" in message
 
 
 class TestCmdList:
@@ -1936,7 +1937,7 @@ title: Test
 
         assert fpath.read_text() == original
 
-    def test_edit_rejects_stale_original(self, tmp_path, capsys):
+    def test_edit_rejects_stale_original(self, tmp_path):
         """A concurrent edit must not be overwritten by the editor result."""
         store = tmp_path / "store"
         store.mkdir()
@@ -1950,11 +1951,10 @@ title: Test
 
         args = MagicMock(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=concurrent_editor):
-            with pytest.raises(SystemExit):
+            with pytest.raises(ConflictError):
                 cmd_edit(args)
 
         assert fpath.read_text() == "external change\n"
-        assert "changed since it was read" in capsys.readouterr().err
 
 
 class TestCmdRm:
@@ -2122,7 +2122,7 @@ class TestCmdMv:
         args.dst = "../../../outside"
         args.force = False
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             cmd_mv(args)
 
         # Source should still exist
@@ -2143,7 +2143,7 @@ class TestCmdMv:
         args.dst = "elsewhere"
         args.force = False
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(UnsafePathError):
             cmd_mv(args)
         assert link.is_symlink()
         assert target.exists()
@@ -2444,7 +2444,7 @@ class TestStoreMissingDies:
         import bm.commands as cmds
 
         args = argparse.Namespace(store=str(tmp_path / "nope"), **extra)
-        with pytest.raises(SystemExit):
+        with pytest.raises(NotFoundError):
             getattr(cmds, f"cmd_{name}")(args)
 
 
@@ -2700,25 +2700,25 @@ modified: {old_modified}
         meta, body = load_entry(fpath)
         assert meta["modified"] == new_modified
 
-    def test_tag_rejects_stale_original(self, tmp_path, monkeypatch, capsys):
+    def test_tag_rejects_stale_original(self, tmp_path, monkeypatch):
         """Tag updates must not overwrite a file changed after it was read."""
-        import bm.commands as commands_mod
-        from bm.io import atomic_write as real_atomic_write
+        from bm.store import Store
+
+        real_write = Store.write
 
         store = tmp_path / "store"
         store.mkdir()
         fpath = store / "test.bm"
         fpath.write_text("---\nurl: https://example.com\ntags: [alpha]\n---\n")
 
-        def stale_write(path, data, expected=None):
+        def stale_write(store, path, data, expected=None):
             path.write_text("external change\n")
-            return real_atomic_write(path, data, expected=expected)
+            return real_write(store, path, data, expected=expected)
 
-        monkeypatch.setattr(commands_mod, "atomic_write", stale_write)
+        monkeypatch.setattr(Store, "write", stale_write)
         args = MagicMock(store=str(store), id="test", action="add", tags=["beta"])
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConflictError):
             cmd_tag(args)
 
         assert fpath.read_text() == "external change\n"
-        assert "changed since it was read" in capsys.readouterr().err

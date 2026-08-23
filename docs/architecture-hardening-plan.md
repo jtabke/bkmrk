@@ -88,6 +88,14 @@ Improve bm's data safety, failure handling, testability, and module boundaries w
 - Dedupe verifies scanned entries remain unchanged before rewriting or deleting them.
 - Existing CLI exit codes and messages remain stable where covered.
 
+**Implementation note:** Store mutations perform optimistic byte-snapshot checks before
+write/delete/move. The standard library does not provide a portable content
+compare-and-swap across the final check and filesystem operation, so an external
+writer can still race that narrow window. Multi-file operations verify the full
+scan before starting but may retain safe partial progress if a later per-file
+check conflicts; callers must treat `ConflictError` as a retry/reconciliation
+signal rather than as a transaction guarantee.
+
 ## Group 4 — Query and format boundaries
 
 **Commit:** `refactor: split query and interchange concerns`

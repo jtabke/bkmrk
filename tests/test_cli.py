@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from bm.cli import main
+from bm.errors import AmbiguousEntryError, NotFoundError, UnsafePathError
 
 
 class TestMain:
@@ -72,6 +73,28 @@ class TestMain:
             with pytest.raises(SystemExit) as e:
                 main()
         assert e.value.code == 0
+
+    @patch("bm.cli.cmd_list", side_effect=UnsafePathError("absolute paths not allowed"))
+    def test_application_error_uses_declared_exit_code(self, _mock, capsys):
+        with patch("sys.argv", ["bm", "list"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == "bm: absolute paths not allowed\n"
+
+    @pytest.mark.parametrize(
+        ("error", "message"),
+        [
+            (NotFoundError("store not found"), "store not found"),
+            (AmbiguousEntryError("ambiguous bookmark"), "ambiguous bookmark"),
+        ],
+    )
+    def test_domain_errors_are_rendered_at_cli_boundary(self, error, message, capsys):
+        with patch("bm.cli.cmd_list", side_effect=error), patch("sys.argv", ["bm", "list"]):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == f"bm: {message}\n"
 
     @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
     def test_unexpected_exception_exits_2(self, _mock, capsys):

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import ParseResult, parse_qsl, urlencode, urlparse
 
+from .errors import UnsafePathError
 from .models import FILE_EXT
 
 
@@ -87,7 +88,7 @@ def normalize_slug(s: str) -> str:
 def _reject_absolute_path(rel: str) -> None:
     """Reject POSIX and Windows absolute path syntax before normalization."""
     if rel.startswith(("/", "\\")) or ntpath.isabs(rel):
-        die("absolute paths not allowed")
+        raise UnsafePathError("absolute paths not allowed")
 
 
 def _reject_unsafe(rel: str) -> str:
@@ -99,12 +100,12 @@ def _reject_unsafe(rel: str) -> str:
     upload to ambiguous filesystem locations.
     """
     if "\x00" in rel:
-        die("null byte in path not allowed")
+        raise UnsafePathError("null byte in path not allowed")
     _reject_absolute_path(rel)
     parts = [p for p in rel.split("/") if p]
     for p in parts:
         if p and set(p) == {"."}:
-            die(f"unsafe path segment {p!r} not allowed")
+            raise UnsafePathError(f"unsafe path segment {p!r} not allowed")
     return "/".join(parts)
 
 
@@ -127,7 +128,7 @@ def id_to_path(store: Path, slug: str) -> Path:
     slug = _reject_unsafe(slug)
     fpath = store / (slug + FILE_EXT)
     if not is_relative_to(fpath, store):
-        die("destination escapes store")
+        raise UnsafePathError("destination escapes store")
     return fpath
 
 

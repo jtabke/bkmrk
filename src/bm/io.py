@@ -6,11 +6,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .errors import ConflictError
 from .models import FM_END, FM_START
 
-
-class ConcurrentModificationError(OSError):
-    """Raised when a write target changed after it was read."""
+# Compatibility alias for callers that imported the old persistence exception.
+ConcurrentModificationError = ConflictError
 
 
 def _normalize_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,9 +241,9 @@ def _check_expected(path: Path, expected: bytes) -> None:
     try:
         current = path.read_bytes()
     except FileNotFoundError as exc:
-        raise ConcurrentModificationError(f"bookmark changed since it was read: {path}") from exc
+        raise ConflictError(f"bookmark changed since it was read: {path}") from exc
     if current != expected:
-        raise ConcurrentModificationError(f"bookmark changed since it was read: {path}")
+        raise ConflictError(f"bookmark changed since it was read: {path}")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -271,7 +271,7 @@ def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> Non
     Refuses to overwrite an existing symlink at ``path`` so a planted symlink
     cannot redirect the write outside the store. ``expected`` is the byte
     snapshot read by a caller performing a read/modify/write operation; a
-    mismatch raises :class:`ConcurrentModificationError` and leaves the
+    mismatch raises :class:`ConflictError` and leaves the
     existing file untouched.
     """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")

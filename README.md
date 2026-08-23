@@ -438,10 +438,11 @@ Windows notes:
 
 ## Security & robustness
 
-- **Atomic writes**: all modifications write to a temp file then `os.replace` it
+- **Atomic writes**: modifications write to a same-directory temp file, flush it, and use `os.replace`; directory fsync is best-effort where supported
+- **Conflict-aware mutations**: read/modify/write operations compare byte snapshots and raise a conflict instead of overwriting changes observed before the final check; portable stdlib APIs cannot close the narrow external-writer check/replace race, and multi-file operations may retain safe partial progress before a later conflict, so this is not a transaction guarantee
 - **Path safety**: `..` and absolute paths are rejected; files cannot escape the store
 - **No network by default**: `bm` never fetches content (future hooks can)
-- **Git**: pushes only if an upstream is configured
+- **Git**: pushes only if an upstream is configured and Git commands are bounded/non-interactive
 
 ---
 
