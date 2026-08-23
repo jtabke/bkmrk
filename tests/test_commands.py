@@ -21,9 +21,8 @@ from bm.commands import (
     cmd_sync,
     cmd_tag,
     cmd_tags,
-    resolve_id_or_path,
 )
-from bm.errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
+from bm.errors import BmError, ConflictError, NotFoundError, UnsafePathError
 from bm.io import load_entry
 
 
@@ -90,10 +89,10 @@ class TestCmdInit:
         args = MagicMock(store=str(store), git=True)
         error = subprocess.CalledProcessError(returncode=7, cmd=_git_cmd("init"))
 
-        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+        with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
             cmd_init(args)
 
-        assert exc.value.code == 7
+        assert exc.value.exit_code == 7
         assert "Initialized git repository." not in capsys.readouterr().out
 
     def test_init_git_timeout_is_bounded(self, tmp_path, capsys):
@@ -104,11 +103,11 @@ class TestCmdInit:
         args = MagicMock(store=str(store), git=True)
         error = subprocess.TimeoutExpired(_git_cmd("init"), timeout=30)
 
-        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+        with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
             cmd_init(args)
 
-        assert exc.value.code == 124
-        assert "git command timed out after 30s" in capsys.readouterr().err
+        assert exc.value.exit_code == 124
+        assert "git command timed out after 30s" in str(exc.value)
 
     def test_init_without_git_does_not_call_git(self, tmp_path):
         """Should not call git if not requested."""
@@ -210,7 +209,7 @@ class TestCmdAdd:
 
         # Second add without force should fail
         with patch("bm.commands._launch_editor"):
-            with pytest.raises(SystemExit):
+            with pytest.raises(BmError):
                 cmd_add(args)
 
         args.force = True
@@ -299,7 +298,7 @@ class TestCmdAdd:
             path.write_text("---\ntitle: nothing\n---\n")
 
         with patch("bm.commands._launch_editor", side_effect=clear_url):
-            with pytest.raises(SystemExit):
+            with pytest.raises(BmError):
                 cmd_add(args)
 
     def test_add_rejects_absolute_folder_before_normalizing(self, tmp_path):
@@ -323,87 +322,6 @@ class TestCmdAdd:
         with pytest.raises(UnsafePathError):
             cmd_add(args)
         assert not list(store.glob("*.bm"))
-
-
-class TestResolveIdOrPath:
-    """Test resolve_id_or_path function."""
-
-    def test_resolve_by_id(self, tmp_path):
-        """Should resolve by stable ID."""
-        store = tmp_path / "store"
-        store.mkdir()
-        # Create a test file
-        content = """---
-url: https://example.com
----
-"""
-        fpath = store / "test.bm"
-        fpath.write_text(content)
-
-        from bm.utils import rid
-
-        bookmark_id = rid("https://example.com")
-
-        result = resolve_id_or_path(store, bookmark_id)
-        assert result == fpath
-
-    def test_resolve_by_path(self, tmp_path):
-        """Should resolve by path."""
-        store = tmp_path / "store"
-        store.mkdir()
-        fpath = store / "test.bm"
-        fpath.write_text("content")
-
-        result = resolve_id_or_path(store, "test")
-        assert result == fpath
-
-    def test_resolve_not_found(self, tmp_path):
-        """Should return None for not found id."""
-        store = tmp_path / "store"
-        store.mkdir()
-        result = resolve_id_or_path(store, "does-not-exist")
-        assert result is None
-
-    def test_resolve_id_wins_over_fuzzy(self, tmp_path):
-        """Should prefer ID match over fuzzy path match."""
-        store = tmp_path / "store"
-        store.mkdir()
-        # Create bookmark with specific URL
-        content1 = """---
-url: https://example.com/page1
----
-"""
-        fpath1 = store / "page1.bm"
-        fpath1.write_text(content1)
-
-        # Create another bookmark that would match fuzzy search
-        content2 = """---
-url: https://different.com/page1-suffix
----
-"""
-        fpath2 = store / "page1-suffix.bm"
-        fpath2.write_text(content2)
-
-        from bm.utils import rid
-
-        # Use ID of first bookmark
-        bookmark_id = rid("https://example.com/page1")
-        result = resolve_id_or_path(store, bookmark_id)
-        assert result == fpath1
-
-    def test_resolve_fuzzy_ambiguous_raises_domain_error(self, tmp_path):
-        """Ambiguous resolution must remain presentation-free below the CLI."""
-        store = tmp_path / "store"
-        store.mkdir()
-        (store / "prefix-suffix.bm").write_text("---\nurl: https://example1.com\n---\n")
-        (store / "other-suffix.bm").write_text("---\nurl: https://example2.com\n---\n")
-
-        with pytest.raises(AmbiguousEntryError) as exc_info:
-            resolve_id_or_path(store, "suffix")
-        message = str(exc_info.value)
-        assert "ambiguous" in message
-        assert "prefix-suffix" in message
-        assert "other-suffix" in message
 
 
 class TestCmdList:
@@ -678,9 +596,9 @@ tags: [python]
         args.json = False
         args.jsonl = False
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(BmError) as exc_info:
             cmd_search(args)
-        assert exc_info.value.code == 1
+        assert exc_info.value.exit_code == 1
         captured = capsys.readouterr()
         assert "test" not in captured.out
 
@@ -1387,9 +1305,9 @@ modified: 2023-01-15T10:00:00Z
             json=False,
             jsonl=False,
         )
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(BmError) as exc_info:
             cmd_search(args)
-        assert exc_info.value.code == 2
+        assert exc_info.value.exit_code == 2
 
     def test_search_zero_hits_exits_one(self, tmp_path):
         """No matches should exit code 1."""
@@ -1411,9 +1329,9 @@ modified: 2023-01-15T10:00:00Z
             json=False,
             jsonl=False,
         )
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(BmError) as exc_info:
             cmd_search(args)
-        assert exc_info.value.code == 1
+        assert exc_info.value.exit_code == 1
 
     def test_search_via_fixtures(self, store, args_factory, write_bm, capsys):
         """Smoke test of the conftest fixtures via cmd_search."""
@@ -1659,7 +1577,7 @@ title: Test
         args.store = str(store)
         args.id = "test"
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(BmError):
             cmd_open(args)
 
     def test_open_browser_failure_warning(self, tmp_path, capsys):
@@ -1697,11 +1615,10 @@ title: Test
 
         args = argparse.Namespace(store=str(store), id="evil", allow_scheme=False)
 
-        with patch("webbrowser.open") as mock_open, pytest.raises(SystemExit):
+        with patch("webbrowser.open") as mock_open, pytest.raises(BmError) as exc:
             cmd_open(args)
         mock_open.assert_not_called()
-        captured = capsys.readouterr()
-        assert "refusing to open 'javascript' URL" in captured.err
+        assert "refusing to open 'javascript' URL" in str(exc.value)
 
     def test_open_allow_scheme_override(self, tmp_path):
         """Should open disallowed scheme when --allow-scheme is set."""
@@ -1932,7 +1849,7 @@ title: Test
 
         args = MagicMock(store=str(store), id="test")
         with patch("bm.commands._launch_editor", side_effect=clear_url):
-            with pytest.raises(SystemExit):
+            with pytest.raises(BmError):
                 cmd_edit(args)
 
         assert fpath.read_text() == original
@@ -2078,7 +1995,7 @@ class TestCmdMv:
         args.dst = "existing"
         args.force = False
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(BmError):
             cmd_mv(args)
 
         # Source should still exist
@@ -2396,8 +2313,8 @@ class TestCmdDirs:
         assert _json.loads(capsys.readouterr().out) == ["dev", "dev/python"]
 
 
-class TestNotFoundDies:
-    """Each lookup command should die cleanly when the id is unknown."""
+class TestNotFoundErrors:
+    """Each lookup command should raise a domain error for an unknown id."""
 
     @pytest.mark.parametrize(
         "ctor, extra",
@@ -2409,17 +2326,17 @@ class TestNotFoundDies:
             ("tag", {"action": "add", "tags": ["x"]}),
         ],
     )
-    def test_unknown_id_exits(self, store, args_factory, ctor, extra):
+    def test_unknown_id_raises_domain_error(self, store, args_factory, ctor, extra):
         import bm.commands as cmds
 
         fn = getattr(cmds, f"cmd_{ctor}")
         args = args_factory(id="ghost", **extra)
-        with pytest.raises(SystemExit):
+        with pytest.raises(NotFoundError):
             fn(args)
 
 
-class TestStoreMissingDies:
-    """Commands that explicitly check for the store should die when it's gone."""
+class TestStoreMissingErrors:
+    """Commands that explicitly check for the store should raise when it's gone."""
 
     @pytest.mark.parametrize(
         "name, extra",
@@ -2459,9 +2376,9 @@ class TestCmdSync:
         args = MagicMock()
         args.store = str(store)
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(BmError) as exc_info:
             cmd_sync(args)
-        assert exc_info.value.code == 2
+        assert exc_info.value.exit_code == 2
 
     def test_sync_success_adds_and_commits(self, tmp_path):
         """Should run git add and commit on success."""
@@ -2560,11 +2477,11 @@ class TestCmdSync:
                 returncode=5,
                 cmd=_git_cmd("add", "-A"),
             )
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(BmError) as exc_info:
                 cmd_sync(args)
 
-        assert exc_info.value.code == 5
-        assert "git command failed" in capsys.readouterr().err
+        assert exc_info.value.exit_code == 5
+        assert "git command failed" in str(exc_info.value)
         first_call = mock_run.call_args_list[0]
         assert first_call[0][0] == _git_cmd("add", "-A")
 
@@ -2610,11 +2527,11 @@ class TestCmdSync:
         args = MagicMock(store=str(store))
         error = subprocess.TimeoutExpired(_git_cmd("push"), timeout=30)
 
-        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+        with patch("subprocess.run", side_effect=error), pytest.raises(BmError) as exc:
             cmd_sync(args)
 
-        assert exc.value.code == 124
-        assert "git command timed out after 30s" in capsys.readouterr().err
+        assert exc.value.exit_code == 124
+        assert "git command timed out after 30s" in str(exc.value)
 
 
 class TestCmdTag:

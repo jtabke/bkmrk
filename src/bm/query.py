@@ -68,8 +68,9 @@ def passes_filters(rel: Path, meta: Dict[str, Any], filters: FilterSpec) -> bool
     )
 
 
-def _build_row(rel: Path, meta: Dict[str, Any], timestamp: Optional[datetime]) -> Dict[str, Any]:
+def _build_row(rel: Path, meta: Dict[str, Any]) -> Dict[str, Any]:
     url = meta.get("url", "")
+    timestamp = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
     return {
         "id": rid(url),
         "path": str(rel),
@@ -98,8 +99,7 @@ def collect_rows(
     for rel, meta in entries:
         if not passes_filters(rel, meta, filters):
             continue
-        timestamp = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-        rows.append(_build_row(rel, meta, timestamp))
+        rows.append(_build_row(rel, meta))
     return sort_rows(rows)
 
 
@@ -133,7 +133,6 @@ def _make_search_predicate(query: str, use_regex: bool) -> Callable[[str], bool]
 
 def search_rows(
     entries: Iterable[Tuple[Path, Dict[str, Any], str]],
-    filters: FilterSpec,
     query: str,
     fields: Tuple[str, ...],
     use_regex: bool,
@@ -143,12 +142,9 @@ def search_rows(
     rows = []
     needs_lower = not use_regex
     for rel, meta, body in entries:
-        if not passes_filters(rel, meta, filters):
-            continue
         blob = _build_search_blob(meta, body, fields)
         if needs_lower:
             blob = blob.lower()
         if predicate(blob):
-            timestamp = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-            rows.append(_build_row(rel, meta, timestamp))
+            rows.append(_build_row(rel, meta))
     return sort_rows(rows)

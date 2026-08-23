@@ -7,6 +7,7 @@ import pytest
 
 from bm.commands import _export_row, _filter_spec_from_args
 from bm.dedupe import _entry_score
+from bm.errors import BmError
 from bm.query import (
     FilterSpec,
     _build_row,
@@ -129,8 +130,9 @@ class TestNormalizePathArg:
         import argparse
 
         args = argparse.Namespace(tag=object(), host="", path="", since="")
-        with pytest.raises(TypeError):
+        with pytest.raises(BmError) as exc_info:
             _filter_spec_from_args(args)
+        assert exc_info.value.exit_code == 2
 
 
 class TestFilterSpec:
@@ -177,7 +179,6 @@ class TestBuildRowAndExport:
         row = _build_row(
             Path("dev/x"),
             {"url": "https://e.com", "title": "T", "tags": ["a"], "created": "c", "modified": "m"},
-            None,
         )
         assert row["id"] == rid("https://e.com")
         assert row["path"] == "dev/x"

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from bm.commands import cmd_dedupe
-from bm.errors import ConflictError, UnsafePathError
+from bm.errors import AmbiguousEntryError, ConflictError, UnsafePathError
 from bm.io import build_text, load_entry
 from bm.store import Store
 
@@ -16,6 +16,46 @@ def _write_entry(path, *, url="https://example.com", title="", body=""):
         build_text({"url": url, "title": title}, body),
         encoding="utf-8",
     )
+
+
+def test_store_resolves_by_id_and_path(tmp_path):
+    store = Store(tmp_path / "store")
+    store.create()
+    path = store.path_for("test")
+    _write_entry(path, url="https://example.com")
+
+    from bm.utils import rid
+
+    assert store.resolve("test") == path
+    assert store.resolve(rid("https://example.com")) == path
+    assert store.resolve("does-not-exist") is None
+
+
+def test_store_id_match_wins_over_fuzzy_path_match(tmp_path):
+    store = Store(tmp_path / "store")
+    store.create()
+    first = store.path_for("page1")
+    second = store.path_for("page1-suffix")
+    _write_entry(first, url="https://example.com/page1")
+    _write_entry(second, url="https://different.com/page1-suffix")
+
+    from bm.utils import rid
+
+    assert store.resolve(rid("https://example.com/page1")) == first
+
+
+def test_store_reports_ambiguous_fuzzy_resolution(tmp_path):
+    store = Store(tmp_path / "store")
+    store.create()
+    _write_entry(store.path_for("prefix-suffix"), url="https://example1.com")
+    _write_entry(store.path_for("other-suffix"), url="https://example2.com")
+
+    with pytest.raises(AmbiguousEntryError) as exc_info:
+        store.resolve("suffix")
+    message = str(exc_info.value)
+    assert "ambiguous" in message
+    assert "prefix-suffix" in message
+    assert "other-suffix" in message
 
 
 def test_store_path_and_snapshot_boundary(tmp_path):

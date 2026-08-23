@@ -9,11 +9,11 @@ import tempfile
 import textwrap
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 from .dedupe import _merge_entry_group, _select_survivor
-from .errors import UnsafePathError
+from .errors import BmError, NotFoundError, UnsafePathError
 from .io import build_text, load_entry, parse_front_matter
 from .models import FILE_EXT, default_store
 from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_html
@@ -24,7 +24,6 @@ from .utils import (
     _reject_absolute_path,
     _reject_unsafe,
     create_slug_from_url,
-    die,
     iso_now,
     normalize_slug,
     normalize_url_for_compare,
@@ -42,9 +41,9 @@ def _store_from_args(args) -> Store:
     return Store(Path(args.store) if args.store else default_store())
 
 
-def _require_store(store: Store, message: str) -> None:
-    """Require an existing store and let the CLI render domain errors."""
-    store.require_exists(message)
+def _warn_skipped(relative: Path, exc: Exception) -> None:
+    """Report an unreadable bookmark while continuing a best-effort scan."""
+    print(f"bm: skipping {relative}: {exc}", file=sys.stderr)
 
 
 def _progress_tick(label: str, count: int) -> None:
@@ -106,7 +105,7 @@ def cmd_init(args) -> None:
 def cmd_add(args) -> None:
     """Add a new bookmark."""
     store = _store_from_args(args)
-    _require_store(store, f"store not found: {store.root}. Run `bm init` first.")
+    store.require_exists(f"store not found: {store.root}. Run `bm init` first.")
     url = args.url.strip()
     slug = args.id or create_slug_from_url(url)
     if args.path:
@@ -116,8 +115,7 @@ def cmd_add(args) -> None:
     slug = _reject_unsafe(slug)
     fpath = store.path_for(slug)
     if fpath.exists() and not args.force:
-        die(f"bookmark exists: {slug} (use --force to overwrite)")
-    store.ensure_parent(fpath)
+        raise BmError(f"bookmark exists: {slug} (use --force to overwrite)")
 
     meta = {
         "url": url,
@@ -149,7 +147,7 @@ def cmd_add(args) -> None:
         meta = {**meta2, "created": meta["created"]}
         body = body2
         if not meta.get("url"):
-            die("url cleared in editor")
+            raise BmError("url cleared in editor")
         if meta["url"] != original_url:
             print(
                 f"bm: warning: url changed in editor; entry stored under original slug "
@@ -164,10 +162,9 @@ def cmd_add(args) -> None:
 def cmd_show(args) -> None:
     """Show a bookmark entry."""
     store = _store_from_args(args)
-    p = resolve_id_or_path(store, args.id)
+    p = store.resolve(args.id)
     if not p:
-        die("not found")
-    assert p is not None
+        raise NotFoundError("not found")
     rel = p.relative_to(store.root).with_suffix("")
     print(f"# {rel}")
     meta, body = load_entry(p)
@@ -184,43 +181,20 @@ def cmd_show(args) -> None:
 def cmd_open(args) -> None:
     """Open bookmark in browser."""
     store = _store_from_args(args)
-    p = resolve_id_or_path(store, args.id)
+    p = store.resolve(args.id)
     if not p:
-        die("not found")
+        raise NotFoundError("not found")
     meta, _ = load_entry(p)
     url = meta.get("url")
     if not url:
-        die("no url in entry")
+        raise BmError("no url in entry")
     scheme = (urlparse(url).scheme or "").lower()
     if scheme not in ALLOWED_URL_SCHEMES and not getattr(args, "allow_scheme", False):
-        die(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
+        raise BmError(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
     ok = webbrowser.open(url)
     print(url)
     if not ok:
         print("bm: warning: system did not acknowledge opening browser", file=sys.stderr)
-
-
-def _coerce_store(value: Union[Store, Path, str]) -> Store:
-    """Accept the concrete boundary while retaining private helper compatibility."""
-    return value if isinstance(value, Store) else Store(value)
-
-
-def _iter_entries(
-    store: Union[Store, Path, str], meta_only: bool = False, snapshot: bool = False
-) -> Generator[Tuple[Path, Path, Dict[str, Any], str], None, None]:
-    """Iterate over entries through the store boundary.
-
-    Files that fail to load are skipped with the established stderr warning.
-    Snapshot-aware callers should use ``Store.iter_entries`` directly so the
-    precondition bytes remain attached to each :class:`StoreEntry`.
-    """
-    fs_store = _coerce_store(store)
-
-    def warn(relative: Path, exc: Exception) -> None:
-        print(f"bm: skipping {relative}: {exc}", file=sys.stderr)
-
-    for entry in fs_store.iter_entries(meta_only=meta_only, snapshot=snapshot, on_error=warn):
-        yield entry.path, entry.relative_path, entry.meta, entry.body
 
 
 def _filter_spec_from_args(args) -> FilterSpec:
@@ -232,7 +206,7 @@ def _filter_spec_from_args(args) -> FilterSpec:
         if value is None:
             return ""
         if not isinstance(value, str):
-            raise TypeError(f"--{name} must be a string")
+            raise BmError(f"--{name} must be a string", exit_code=2)
         return value
 
     tag = text_value("tag") or None
@@ -244,7 +218,10 @@ def _filter_spec_from_args(args) -> FilterSpec:
 
 
 def _collect_rows(store: Store, filters: FilterSpec) -> List[dict]:
-    entries = ((rel, meta) for _, rel, meta, _ in _iter_entries(store, meta_only=True))
+    entries = (
+        (entry.relative_path, entry.meta)
+        for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped)
+    )
     return collect_rows(entries, filters)
 
 
@@ -264,7 +241,7 @@ def _output_rows(rows: List[dict], args):
 def cmd_list(args) -> None:
     """List bookmarks."""
     store = _store_from_args(args)
-    _require_store(store, f"store not found: {store.root}")
+    store.require_exists(f"store not found: {store.root}")
     rows = _collect_rows(store, _filter_spec_from_args(args))
     _output_rows(rows, args)
 
@@ -274,30 +251,30 @@ def _search_fields_from_args(args) -> Tuple[str, ...]:
     if fields_arg is None:
         return SEARCH_FIELDS
     if not isinstance(fields_arg, list) or not fields_arg:
-        raise TypeError("--field must be a non-empty list")
+        raise BmError("--field must be a non-empty list", exit_code=2)
     return tuple(fields_arg)
 
 
 def _search_regex_from_args(args) -> bool:
     use_regex = vars(args).get("regex", False)
     if not isinstance(use_regex, bool):
-        raise TypeError("--regex must be a boolean")
+        raise BmError("--regex must be a boolean", exit_code=2)
     return use_regex
 
 
 def _search_entries(store: Store, filters: FilterSpec, fields: Tuple[str, ...]):
     """Yield filtered entries while retaining metadata-only body loading."""
     needs_body = "body" in fields
-    for p, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not passes_filters(rel, meta, filters):
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
         body = ""
         if needs_body:
             try:
-                _, body = load_entry(p)
+                _, body = load_entry(entry.path)
             except (OSError, ValueError, UnicodeError):
                 continue
-        yield rel, meta, body
+        yield entry.relative_path, entry.meta, body
 
 
 def cmd_search(args) -> None:
@@ -307,27 +284,21 @@ def cmd_search(args) -> None:
     use_regex = _search_regex_from_args(args)
     filters = _filter_spec_from_args(args)
     try:
-        hits = search_rows(
-            _search_entries(store, filters, fields),
-            filters,
-            args.query,
-            fields,
-            use_regex,
-        )
+        hits = search_rows(_search_entries(store, filters, fields), args.query, fields, use_regex)
     except re.error as exc:
-        die(f"invalid --regex pattern: {exc}", code=2)
+        raise BmError(f"invalid --regex pattern: {exc}", exit_code=2) from exc
 
     _output_rows(hits, args)
     if not hits:
-        sys.exit(1)
+        raise BmError(exit_code=1)
 
 
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
     store = _store_from_args(args)
-    p = resolve_id_or_path(store, args.id)
+    p = store.resolve(args.id)
     if not p:
-        die("not found")
+        raise NotFoundError("not found")
 
     original = store.snapshot(p)
     fd, tmp_name = tempfile.mkstemp(
@@ -343,7 +314,7 @@ def cmd_edit(args) -> None:
         edited = tmp.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_front_matter(edited)
         if not meta.get("url"):
-            die("url cleared in editor")
+            raise BmError("url cleared in editor")
         meta["modified"] = iso_now()
         store.write(p, build_text(meta, body), expected=original)
     finally:
@@ -356,29 +327,28 @@ def cmd_edit(args) -> None:
 def cmd_rm(args) -> None:
     """Remove bookmark."""
     store = _store_from_args(args)
-    p = resolve_id_or_path(store, args.id)
+    p = store.resolve(args.id)
     if not p:
-        die("not found")
-    assert p is not None
+        raise NotFoundError("not found")
     store.delete(p, expected=store.snapshot(p))
 
 
 def cmd_mv(args) -> None:
     """Move/rename bookmark."""
     store = _store_from_args(args)
-    src = resolve_id_or_path(store, args.src)
+    src = store.resolve(args.src)
     if not src:
-        die("source not found")
+        raise NotFoundError("source not found")
     _reject_absolute_path(args.dst)
     dst_slug = normalize_slug(args.dst)
     dst_slug = _reject_unsafe(dst_slug)
     dst = store.path_for(dst_slug)
     try:
         store.move(src, dst, expected=store.snapshot(src), force=args.force)
-    except FileExistsError:
-        die("destination exists (use --force)")
+    except FileExistsError as exc:
+        raise BmError("destination exists (use --force)") from exc
     except OSError as exc:
-        die(f"move failed: {exc}")
+        raise BmError(f"move failed: {exc}") from exc
     print(dst.relative_to(store.root).with_suffix(""))
 
 
@@ -387,9 +357,9 @@ def cmd_tags(args) -> None:
     store = _store_from_args(args)
     folder_tags = set()
     header_tags = set()
-    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-        folder_tags.update(rel.parts[:-1])
-        header_tags.update(t.strip() for t in meta.get("tags", []) if t.strip())
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        folder_tags.update(entry.relative_path.parts[:-1])
+        header_tags.update(t.strip() for t in entry.meta.get("tags", []) if t.strip())
     all_tags = sorted(folder_tags | header_tags)
     for t in all_tags:
         print(t)
@@ -399,9 +369,9 @@ def cmd_dirs(args) -> None:
     """List known directory prefixes."""
     store = _store_from_args(args)
     dirs = set()
-    for _, rel, _, _ in _iter_entries(store, meta_only=True):
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
         # Add all parent directories
-        parts = rel.parts
+        parts = entry.relative_path.parts
         for i in range(1, len(parts)):
             dirs.add("/".join(parts[:i]))
     all_dirs = sorted(dirs)
@@ -412,15 +382,11 @@ def cmd_dirs(args) -> None:
             print(d)
 
 
-def _group_entries_by_url(store: Union[Store, Path, str]) -> Dict[str, List[Dict[str, Any]]]:
-    fs_store = _coerce_store(store)
+def _group_entries_by_url(store: Store) -> Dict[str, List[Dict[str, Any]]]:
     buckets: Dict[str, List[Dict[str, Any]]] = {}
     n = 0
 
-    def warn(relative: Path, exc: Exception) -> None:
-        print(f"bm: skipping {relative}: {exc}", file=sys.stderr)
-
-    for entry in fs_store.iter_entries(snapshot=True, on_error=warn):
+    for entry in store.iter_entries(snapshot=True, on_error=_warn_skipped):
         url = entry.meta.get("url", "").strip()
         key = normalize_url_for_compare(url)
         if not key:
@@ -456,11 +422,6 @@ def _write_merged_entry(
     survivor["meta"] = merged_meta_for_write
     survivor["body"] = merged_body
     survivor["snapshot"] = data.encode("utf-8")
-
-
-def _remove_group_entries(store: Store, entries: List[Dict[str, Any]]) -> None:
-    for entry in entries:
-        store.delete(entry["path"], expected=entry["snapshot"])
 
 
 def _process_duplicate_group(
@@ -500,14 +461,15 @@ def _process_duplicate_group(
     for entry in group:
         store.verify(entry["path"], entry["snapshot"])
     _write_merged_entry(store, survivor, merged_meta, merged_body, tags)
-    _remove_group_entries(store, removed_entries)
+    for entry in removed_entries:
+        store.delete(entry["path"], expected=entry["snapshot"])
     return action
 
 
 def cmd_dedupe(args) -> None:
     """Merge duplicate bookmarks based on normalized URLs."""
     store = _store_from_args(args)
-    _require_store(store, f"store not found: {store.root}")
+    store.require_exists(f"store not found: {store.root}")
 
     buckets = _group_entries_by_url(store)
     dry_run = bool(getattr(args, "dry_run", False))
@@ -542,9 +504,9 @@ def cmd_dedupe(args) -> None:
 def cmd_tag(args) -> None:
     """Add or remove tags."""
     store = _store_from_args(args)
-    p = resolve_id_or_path(store, args.id)
+    p = store.resolve(args.id)
     if not p:
-        die("not found")
+        raise NotFoundError("not found")
     original = store.snapshot(p)
     meta, body = load_entry(p)
     cur = set(meta.get("tags", []))
@@ -570,10 +532,10 @@ def _export_row(rel, meta) -> Dict[str, Any]:
 
 def _export_netscape(store: Store, filters: FilterSpec) -> None:
     entries = []
-    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not passes_filters(rel, meta, filters):
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
-        entries.append((str(rel), meta))
+        entries.append((str(entry.relative_path), entry.meta))
     html_body = build_netscape_tree(entries)
     sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
 
@@ -581,16 +543,18 @@ def _export_netscape(store: Store, filters: FilterSpec) -> None:
 def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
     if jsonl:
         # Stream NDJSON one row at a time; output is unsorted.
-        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-            if not passes_filters(rel, meta, filters):
+        for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+            if not passes_filters(entry.relative_path, entry.meta, filters):
                 continue
-            sys.stdout.write(json.dumps(_export_row(rel, meta), ensure_ascii=False) + "\n")
+            sys.stdout.write(
+                json.dumps(_export_row(entry.relative_path, entry.meta), ensure_ascii=False) + "\n"
+            )
         return
     rows = []
-    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not passes_filters(rel, meta, filters):
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
-        rows.append(_export_row(rel, meta))
+        rows.append(_export_row(entry.relative_path, entry.meta))
     rows.sort(key=lambda r: r["path"])
     print(json.dumps(rows, ensure_ascii=False))
 
@@ -604,10 +568,10 @@ def cmd_export(args) -> None:
     elif args.fmt == "json":
         jsonl = vars(args).get("jsonl", False)
         if not isinstance(jsonl, bool):
-            raise TypeError("--jsonl must be a boolean")
+            raise BmError("--jsonl must be a boolean", exit_code=2)
         _export_json(store, filters, jsonl)
     else:
-        die("unknown export format")
+        raise BmError("unknown export format")
 
 
 def cmd_import(args) -> None:
@@ -698,26 +662,26 @@ def _run_git(
             timeout=_GIT_TIMEOUT_SECONDS,
             env=env,
         )
-    except subprocess.TimeoutExpired:
-        die(
+    except subprocess.TimeoutExpired as exc:
+        raise BmError(
             f"git command timed out after {_GIT_TIMEOUT_SECONDS}s: {' '.join(command)}",
-            code=124,
-        )
+            exit_code=124,
+        ) from exc
     except subprocess.CalledProcessError as exc:
-        die(
+        raise BmError(
             f"git command failed ({' '.join(command)}): exit {exc.returncode}",
-            code=exc.returncode or 1,
-        )
+            exit_code=exc.returncode or 1,
+        ) from exc
     except OSError as exc:
-        die(f"git command failed ({' '.join(command)}): {exc}", code=2)
+        raise BmError(f"git command failed ({' '.join(command)}): {exc}", exit_code=2) from exc
 
     # ``check=True`` guarantees this for the real subprocess implementation;
     # retaining the explicit check keeps the seam deterministic for callers
     # that provide a subprocess test double.
     if check and result.returncode:
-        die(
+        raise BmError(
             f"git command failed ({' '.join(command)}): exit {result.returncode}",
-            code=result.returncode or 1,
+            exit_code=result.returncode or 1,
         )
     return result
 
@@ -726,7 +690,7 @@ def cmd_sync(args) -> None:
     """Sync with git."""
     store = _store_from_args(args)
     if not (store.root / ".git").exists():
-        die("store is not a git repo; run: bm init --git", code=2)
+        raise BmError("store is not a git repo; run: bm init --git", exit_code=2)
 
     _run_git(store.root, "add", "-A")
     _run_git(store.root, "commit", "-m", "bm sync", "--allow-empty")
@@ -743,8 +707,3 @@ def cmd_sync(args) -> None:
     )
     if upstream.returncode == 0:
         _run_git(store.root, "push")
-
-
-def resolve_id_or_path(store: Union[Store, Path, str], token: str) -> Optional[Path]:
-    """Compatibility wrapper for the concrete store resolver."""
-    return _coerce_store(store).resolve(token)

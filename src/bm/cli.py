@@ -72,12 +72,9 @@ def _run_command(args: argparse.Namespace) -> int:
         # Downstream pipe closed (e.g. `bm list | head`). Quiet success.
         return 0
     except BmError as exc:
-        print(f"bm: {exc}", file=sys.stderr)
+        if str(exc):
+            print(f"bm: {exc}", file=sys.stderr)
         return exc.exit_code
-    except SystemExit as exc:
-        # Existing command handlers still use ``die`` for their CLI-facing
-        # diagnostics; translate their status at this boundary.
-        return _exit_code(exc.code)
     except Exception as exc:
         if os.environ.get("BM_DEBUG"):
             raise

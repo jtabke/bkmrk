@@ -7,7 +7,6 @@ import posixpath
 import re
 import shlex
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -15,17 +14,6 @@ from urllib.parse import ParseResult, parse_qsl, urlencode, urlparse
 
 from .errors import UnsafePathError
 from .models import FILE_EXT
-
-
-def die(msg: str, code: int = 1) -> None:
-    """Print an error message to stderr and exit with the given code.
-
-    Args:
-        msg: The error message to print.
-        code: The exit code (default 1).
-    """
-    print(f"bm: {msg}", file=sys.stderr)
-    sys.exit(code)
 
 
 def iso_now() -> str:

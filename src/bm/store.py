@@ -32,10 +32,6 @@ class Store:
     def __init__(self, root: Union[Path, str]):
         self.root = Path(root)
 
-    def __fspath__(self) -> str:
-        """Allow callers that need a filesystem path to use the store directly."""
-        return str(self.root)
-
     def exists(self) -> bool:
         """Return whether the store directory exists."""
         return self.root.is_dir()

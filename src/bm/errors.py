@@ -1,15 +1,23 @@
 """Application-level errors shared by core operations and the CLI boundary."""
 
+from typing import Optional
+
 
 class BmError(Exception):
     """Base class for expected bookmark-manager failures.
 
     Core operations raise these exceptions without printing or terminating the
     process. The CLI translates them into the established ``bm: ...`` error
-    output and exit status.
+    output and exit status. A caller may override the status for one-off
+    failures without introducing a new exception subclass.
     """
 
     exit_code = 1
+
+    def __init__(self, message: str = "", *, exit_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        if exit_code is not None:
+            self.exit_code = exit_code
 
 
 class UnsafePathError(BmError):
