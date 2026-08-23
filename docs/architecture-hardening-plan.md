@@ -19,7 +19,7 @@ Improve bm's data safety, failure handling, testability, and module boundaries w
 - `ruff format --check .`: passed
 - Working tree: clean on `main`
 
-## Group 1 — Persistence and input invariants
+## Group 1 — Persistence and input invariants (complete)
 
 **Commit:** `fix: harden bookmark persistence invariants`
 
@@ -41,7 +41,7 @@ Improve bm's data safety, failure handling, testability, and module boundaries w
 - Absolute destination paths are rejected rather than rewritten as relative paths.
 - Existing bookmark format and CLI success output remain compatible.
 
-## Group 2 — External effects and interchange safety
+## Group 2 — External effects and interchange safety (complete)
 
 **Commit:** `fix: bound external commands and escape exports`
 
@@ -61,7 +61,7 @@ Improve bm's data safety, failure handling, testability, and module boundaries w
 - Existing hardened Git configuration remains applied.
 - Exported Netscape HTML is valid for quotes, ampersands, angle brackets, and non-ASCII text.
 
-## Group 3 — Store and application boundary
+## Group 3 — Store and application boundary (complete)
 
 **Commit:** `refactor: centralize store operations and application errors`
 
@@ -96,7 +96,7 @@ scan before starting but may retain safe partial progress if a later per-file
 check conflicts; callers must treat `ConflictError` as a retry/reconciliation
 signal rather than as a transaction guarantee.
 
-## Group 4 — Query and format boundaries
+## Group 4 — Query and format boundaries (complete)
 
 **Commit:** `refactor: split query and interchange concerns`
 
@@ -118,7 +118,7 @@ signal rather than as a transaction guarantee.
 - No generic service layer or catch-all replacement module is introduced.
 - Dedupe's pure selection/merge rules are independently housed in `dedupe.py`; command-level scan/write/delete orchestration remains in `commands.py`.
 
-## Group 5 — CLI contracts and documentation
+## Group 5 — CLI contracts and documentation (complete)
 
 **Commit:** `test: add end-to-end CLI architecture contracts`
 
@@ -141,6 +141,29 @@ signal rather than as a transaction guarantee.
 - Parser wiring and real output/exit behavior are exercised without duplicating every unit test as a subprocess test.
 - README claims match implemented behavior.
 - Final full validation passes on Python 3.8-compatible syntax.
+
+## Final architecture
+
+The completed implementation has these concrete seams:
+
+- `cli.py`: parser construction, `main(argv=None) -> int`, and process-boundary status/error translation.
+- `commands.py`: command orchestration, external-effect adapters, and presentation.
+- `store.py`: filesystem paths, traversal, optimistic snapshots, and mutations.
+- `io.py`: front matter and atomic persistence.
+- `query.py`: immutable filters and list/search row logic.
+- `netscape.py`: Netscape HTML conversion.
+- `dedupe.py`: pure duplicate selection and merge policy.
+
+The concurrency contract is optimistic rather than transactional: mutations reject
+stale snapshots observed before their final check; portable stdlib operations cannot
+close the final check/replace race, and multi-file operations can retain safe partial
+progress after a later conflict. `ConflictError` is therefore a retry/reconciliation
+signal.
+
+Group 5 adds a compact real-CLI contract matrix and makes `main(argv)` return statuses
+for embedding/tests. The console script and `python -m bm` remain the process-exit
+wrappers. Runtime remains stdlib-only and the `.bm` format/unknown metadata behavior is
+unchanged.
 
 ## Per-group workflow
 

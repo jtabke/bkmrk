@@ -97,17 +97,17 @@ Or with uv:
 uv pip install -e '.[dev]'
 ```
 
-Prefer running straight from the repository? The module entry point works without
-installation:
+Prefer running straight from the repository without installation? Point Python at
+the `src` layout:
 
 ```bash
-python -m bm --help
+PYTHONPATH=src python -m bm --help
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-python -m bm --help
+$env:PYTHONPATH = "src"; python -m bm --help
 ```
 
 ---
@@ -182,6 +182,20 @@ Longer notes, checklists, code blocks…
 ### IDs
 
 Each bookmark has a **stable ID** derived from its URL (BLAKE2b short hash). The ID does **not** change if you rename/move the file. You can use either the ID **or** a path‑like slug with commands.
+
+### Architecture
+
+The implementation keeps the filesystem backend concrete and separates responsibilities by seam:
+
+- `bm.cli`: parser construction, `main(argv=None) -> int`, and process-boundary error/status handling
+- `bm.commands`: thin command orchestration and user-facing output
+- `bm.store`: safe path resolution, entry traversal, snapshots, and filesystem mutations
+- `bm.io`: front matter parsing/rendering and atomic file replacement
+- `bm.query`: immutable filter values and list/search row logic
+- `bm.netscape`: Netscape HTML import/export conversion
+- `bm.dedupe`: pure duplicate selection and merge rules
+
+Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.
 
 ---
 
@@ -440,6 +454,7 @@ Windows notes:
 
 - **Atomic writes**: modifications write to a same-directory temp file, flush it, and use `os.replace`; directory fsync is best-effort where supported
 - **Conflict-aware mutations**: read/modify/write operations compare byte snapshots and raise a conflict instead of overwriting changes observed before the final check; portable stdlib APIs cannot close the narrow external-writer check/replace race, and multi-file operations may retain safe partial progress before a later conflict, so this is not a transaction guarantee
+- **Crash durability**: files are flushed and fsynced before replacement; containing-directory fsync is best-effort because platform/filesystem support varies. Atomic visibility and crash durability are separate guarantees.
 - **Path safety**: `..` and absolute paths are rejected; files cannot escape the store
 - **No network by default**: `bm` never fetches content (future hooks can)
 - **Git**: pushes only if an upstream is configured and Git commands are bounded/non-interactive
@@ -449,11 +464,15 @@ Windows notes:
 ## Development
 
 ```bash
-# lint (optional) — stdlib only, so just run the script
+# syntax check
 python3 -m compileall src
 
-# run tests (if added)
-pytest -q
+# lint and format checks (install the dev extra first when needed)
+ruff check .
+ruff format --check .
+
+# test suite
+python3 -m pytest -q
 ```
 
 ### Roadmap / ideas

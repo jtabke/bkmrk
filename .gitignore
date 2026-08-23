@@ -194,6 +194,9 @@ cython_debug/
 # Mutmut generated working tree
 mutants/
 
+# Pi subagent runtime artifacts
+.pi-subagents/
+
 # PyPI configuration file
 .pypirc
 

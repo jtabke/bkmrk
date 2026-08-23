@@ -4,6 +4,7 @@
 import argparse
 import os
 import sys
+from typing import Optional, Sequence
 
 from .commands import (
     cmd_add,
@@ -34,8 +35,66 @@ def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
 
 
-def main() -> None:
-    """Main entry point."""
+def _exit_code(value: object) -> int:
+    """Convert ``SystemExit.code`` to a process status without raising it."""
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    print(value, file=sys.stderr)
+    return 1
+
+
+def _flush_stdout(status: int) -> int:
+    """Flush command output and turn a closed downstream pipe into quiet success."""
+    try:
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # Replace the broken descriptor so interpreter shutdown cannot retry the
+        # failed flush and override the intended zero status with exit 120.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            os.close(devnull)
+        except (OSError, ValueError):
+            pass
+        return 0
+    return status
+
+
+def _run_command(args: argparse.Namespace) -> int:
+    """Dispatch parsed arguments and translate command-level failures."""
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        return 130
+    except BrokenPipeError:
+        # Downstream pipe closed (e.g. `bm list | head`). Quiet success.
+        return 0
+    except BmError as exc:
+        print(f"bm: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except SystemExit as exc:
+        # Existing command handlers still use ``die`` for their CLI-facing
+        # diagnostics; translate their status at this boundary.
+        return _exit_code(exc.code)
+    except Exception as exc:
+        if os.environ.get("BM_DEBUG"):
+            raise
+        print(f"bm: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the CLI and return its process status.
+
+    ``argv`` excludes the executable name, matching ``argparse`` conventions.
+    Help and parser errors are handled here so embedding code can call ``main``
+    without catching ``SystemExit``; the console script and module entry point
+    remain responsible for turning the returned status into process exit.
+    """
+
     ap = argparse.ArgumentParser(prog="bm", description="Plain-text, pass-style bookmarks")
     ap.add_argument(
         "--store",
@@ -157,29 +216,22 @@ def main() -> None:
     p = sp.add_parser("sync", help="git add/commit/push if repo")
     p.set_defaults(func=cmd_sync)
 
-    # Optional shell completion (no hard dependency).
     try:
-        import argcomplete
-    except ImportError:
-        pass
-    else:
-        argcomplete.autocomplete(ap)
-
-    args = ap.parse_args()
-    try:
-        args.func(args)
+        # Optional shell completion (no hard dependency).
+        try:
+            import argcomplete
+        except ImportError:
+            pass
+        else:
+            argcomplete.autocomplete(ap)
+        args = ap.parse_args(argv)
     except KeyboardInterrupt:
-        sys.exit(130)
+        return 130
     except BrokenPipeError:
-        # Downstream pipe closed (e.g. `bm list | head`). Quiet success.
-        sys.exit(0)
-    except BmError as exc:
-        print(f"bm: {exc}", file=sys.stderr)
-        sys.exit(exc.exit_code)
-    except SystemExit:
-        raise
-    except Exception as exc:
-        if os.environ.get("BM_DEBUG"):
-            raise
-        print(f"bm: {type(exc).__name__}: {exc}", file=sys.stderr)
-        sys.exit(2)
+        return 0
+    except SystemExit as exc:
+        # argparse uses SystemExit for --help and usage errors. Preserve those
+        # statuses and output while making the function directly callable.
+        return _exit_code(exc.code)
+
+    return _flush_stdout(_run_command(args))

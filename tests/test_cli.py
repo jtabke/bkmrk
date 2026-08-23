@@ -15,14 +15,14 @@ class TestMain:
     def test_init_command(self, mock_cmd):
         """Should call cmd_init for init command."""
         with patch("sys.argv", ["bm", "init", "--git"]):
-            main()
+            assert main() == 0
             mock_cmd.assert_called_once()
 
     @patch("bm.cli.cmd_add")
     def test_add_command(self, mock_cmd):
         """Should call cmd_add for add command."""
         with patch("sys.argv", ["bm", "add", "https://example.com"]):
-            main()
+            assert main() == 0
             mock_cmd.assert_called_once()
 
     @patch("bm.cli.cmd_add")
@@ -36,50 +36,39 @@ class TestMain:
         assert args.name == "N"
 
     def test_help(self, capsys):
-        """Should show help."""
+        """Should show help and return success without raising."""
         with patch("sys.argv", ["bm", "--help"]):
-            with pytest.raises(SystemExit):
-                main()
-            captured = capsys.readouterr()
-            assert "Plain-text, pass-style bookmarks" in captured.out
+            assert main() == 0
+        captured = capsys.readouterr()
+        assert "Plain-text, pass-style bookmarks" in captured.out
 
     def test_help_exit_code(self, capsys):
-        """Should exit with code 0 for --help."""
+        """Should return code 0 for --help."""
         with patch("sys.argv", ["bm", "--help"]):
-            with pytest.raises(SystemExit) as e:
-                main()
-        assert e.value.code == 0
+            assert main() == 0
         assert "usage:" in capsys.readouterr().out
 
     def test_unknown_command_exits(self, capsys):
-        """Should exit with non-zero code for unknown command."""
+        """Should return code 2 for an unknown command."""
         with patch("sys.argv", ["bm", "nope"]):
-            with pytest.raises(SystemExit) as e:
-                main()
-        assert e.value.code != 0
+            assert main() == 2
         captured = capsys.readouterr()
         assert "nope" in captured.out or "nope" in captured.err
 
     @patch("bm.cli.cmd_list", side_effect=KeyboardInterrupt)
     def test_keyboard_interrupt_exits_130(self, _mock):
         with patch("sys.argv", ["bm", "list"]):
-            with pytest.raises(SystemExit) as e:
-                main()
-        assert e.value.code == 130
+            assert main() == 130
 
     @patch("bm.cli.cmd_list", side_effect=BrokenPipeError)
     def test_broken_pipe_exits_zero(self, _mock):
         with patch("sys.argv", ["bm", "list"]):
-            with pytest.raises(SystemExit) as e:
-                main()
-        assert e.value.code == 0
+            assert main() == 0
 
     @patch("bm.cli.cmd_list", side_effect=UnsafePathError("absolute paths not allowed"))
     def test_application_error_uses_declared_exit_code(self, _mock, capsys):
         with patch("sys.argv", ["bm", "list"]):
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-        assert exc_info.value.code == 1
+            assert main() == 1
         assert capsys.readouterr().err == "bm: absolute paths not allowed\n"
 
     @pytest.mark.parametrize(
@@ -91,17 +80,13 @@ class TestMain:
     )
     def test_domain_errors_are_rendered_at_cli_boundary(self, error, message, capsys):
         with patch("bm.cli.cmd_list", side_effect=error), patch("sys.argv", ["bm", "list"]):
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-        assert exc_info.value.code == 1
+            assert main() == 1
         assert capsys.readouterr().err == f"bm: {message}\n"
 
     @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
     def test_unexpected_exception_exits_2(self, _mock, capsys):
         with patch("sys.argv", ["bm", "list"]):
-            with pytest.raises(SystemExit) as e:
-                main()
-        assert e.value.code == 2
+            assert main() == 2
         captured = capsys.readouterr()
         assert "RuntimeError" in captured.err
         assert "boom" in captured.err
@@ -138,6 +123,7 @@ def test_module_entry_point_runs():
         capture_output=True,
         text=True,
         env=env,
+        timeout=30,
     )
     assert result.returncode == 0
     assert "usage:" in result.stdout
