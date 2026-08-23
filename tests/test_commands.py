@@ -166,6 +166,37 @@ class TestCmdAdd:
         assert "title: Example" in content
         assert "tags: [tag1, tag2]" in content
 
+    def test_add_no_force_race_does_not_overwrite_destination(self, tmp_path, monkeypatch):
+        """A concurrent creator wins a no-force add without being overwritten."""
+        import argparse
+
+        from bm.store import Store
+
+        store = tmp_path / "store"
+        store.mkdir()
+        args = argparse.Namespace(
+            store=str(store),
+            url="https://example.com",
+            id="entry",
+            path=None,
+            name="New",
+            tags=None,
+            description=None,
+            force=False,
+            edit=False,
+        )
+        real_create = Store.create_entry
+
+        def interfere(current_store, path, data):
+            path.write_text("raced", encoding="utf-8")
+            return real_create(current_store, path, data)
+
+        monkeypatch.setattr(Store, "create_entry", interfere)
+        with pytest.raises(BmError) as exc_info:
+            cmd_add(args)
+        assert "bookmark exists" in str(exc_info.value)
+        assert (store / "entry.bm").read_text(encoding="utf-8") == "raced"
+
     def test_add_generated_slug_excludes_url_userinfo(self, tmp_path):
         """Auto-generated filenames must not leak URL credentials/userinfo."""
         store = tmp_path / "store"
@@ -729,6 +760,29 @@ class TestCmdImport:
         assert meta["url"] == "https://example.com"
         assert meta["title"] == "Example Title"
         assert meta["tags"] == ["tag1", "tag2"]
+
+    def test_import_no_force_race_does_not_overwrite_destination(self, tmp_path, monkeypatch):
+        """A concurrent creator wins a no-force import without being overwritten."""
+        import argparse
+
+        from bm.store import Store
+
+        store = tmp_path / "store"
+        store.mkdir()
+        netscape_file = tmp_path / "bookmarks.html"
+        netscape_file.write_text(
+            '<DL><p>\n<DT><A HREF="https://example.com">Imported</A>\n</DL><p>\n',
+            encoding="utf-8",
+        )
+        real_create = Store.create_entry
+
+        def interfere(current_store, path, data):
+            path.write_text("raced", encoding="utf-8")
+            return real_create(current_store, path, data)
+
+        monkeypatch.setattr(Store, "create_entry", interfere)
+        cmd_import(argparse.Namespace(store=str(store), file=str(netscape_file), force=False))
+        assert list(store.glob("*.bm"))[0].read_text(encoding="utf-8") == "raced"
 
     def test_import_progress_silent_when_not_a_tty(self, tmp_path, capsys):
         """Progress lines should be suppressed when stderr is not a TTY."""

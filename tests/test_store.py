@@ -101,6 +101,47 @@ def test_prune_with_relative_root_never_removes_store_root(tmp_path, monkeypatch
     assert not nested.exists()
 
 
+def test_store_create_entry_race_preserves_winner(tmp_path, monkeypatch):
+    """Create-only entries reject a destination created after the caller's check."""
+    import bm.io as io_mod
+
+    store = Store(tmp_path / "store")
+    store.create()
+    path = store.path_for("entry")
+    original_link = io_mod.os.link
+
+    def interfere(source, destination):
+        path.write_text("raced", encoding="utf-8")
+        return original_link(source, destination)
+
+    monkeypatch.setattr(io_mod.os, "link", interfere)
+    with pytest.raises(FileExistsError):
+        store.create_entry(path, "replacement")
+    assert path.read_text(encoding="utf-8") == "raced"
+
+
+def test_store_move_without_replace_race_preserves_winner(tmp_path, monkeypatch):
+    """No-force moves reject a destination created during the atomic link step."""
+    import bm.io as io_mod
+
+    store = Store(tmp_path / "store")
+    store.create()
+    source = store.path_for("source")
+    destination = store.path_for("destination")
+    source.write_text("source", encoding="utf-8")
+    original_link = io_mod.os.link
+
+    def interfere(link_source, link_destination):
+        destination.write_text("raced", encoding="utf-8")
+        return original_link(link_source, link_destination)
+
+    monkeypatch.setattr(io_mod.os, "link", interfere)
+    with pytest.raises(FileExistsError):
+        store.move(source, destination, force=False)
+    assert source.read_text(encoding="utf-8") == "source"
+    assert destination.read_text(encoding="utf-8") == "raced"
+
+
 def test_store_mutations_reject_stale_snapshots(tmp_path):
     store = Store(tmp_path / "store")
     store.create()

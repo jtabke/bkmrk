@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Generator, Optional, Union
 
 from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
-from .io import atomic_write, load_entry, parse_front_matter
+from .io import atomic_create, atomic_move_no_replace, atomic_write, load_entry, parse_front_matter
 from .models import FILE_EXT
 from .utils import _reject_absolute_path, _reject_unsafe, id_to_path, normalize_slug, rid
 
@@ -85,9 +85,14 @@ class Store:
         self._check_snapshot(path, expected)
 
     def write(self, path: Path, data: str, expected: Optional[bytes] = None) -> None:
-        """Atomically write a member, optionally requiring an unchanged snapshot."""
+        """Atomically replace a member, optionally requiring an unchanged snapshot."""
         checked = self.ensure_parent(path)
         atomic_write(checked, data, expected=expected)
+
+    def create_entry(self, path: Path, data: str) -> None:
+        """Atomically create a member without replacing an existing destination."""
+        checked = self.ensure_parent(path)
+        atomic_create(checked, data)
 
     def delete(self, path: Path, expected: Optional[bytes] = None) -> None:
         """Delete a member, optionally requiring an unchanged snapshot."""
@@ -117,10 +122,11 @@ class Store:
             raise OSError(f"refusing to move a symlink: {source}")
         if expected is not None:
             self._check_snapshot(source, expected)
-        if destination.exists() and not force:
-            raise FileExistsError(destination)
         source_parent = source.parent
-        source.replace(destination)
+        if force:
+            source.replace(destination)
+        else:
+            atomic_move_no_replace(source, destination)
         self.prune_empty_dirs(source_parent)
         return destination
 

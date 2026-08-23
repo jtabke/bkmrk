@@ -455,6 +455,7 @@ Windows notes:
 - **Atomic writes**: modifications write to a same-directory temp file, flush it, and use `os.replace`; directory fsync is best-effort where supported
 - **Conflict-aware mutations**: read/modify/write operations compare byte snapshots and raise a conflict instead of overwriting changes observed before the final check; portable stdlib APIs cannot close the narrow external-writer check/replace race, and multi-file operations may retain safe partial progress before a later conflict, so this is not a transaction guarantee
 - **Crash durability**: files are flushed and fsynced before replacement; containing-directory fsync is best-effort because platform/filesystem support varies. Atomic visibility and crash durability are separate guarantees.
+- **No-clobber creation/moves**: no-force add/import publish a fully written temp file with an atomic hard link, and no-force moves use link-then-unlink. Existing destinations are never overwritten; a crash during creation can leave a harmless temporary hard-link name, while a crash during a move can leave both source and destination names. Both states are safe to reconcile on retry. Filesystems without hard-link support fail rather than falling back to replacement.
 - **Path safety**: `..` and absolute paths are rejected; files cannot escape the store
 - **No network by default**: `bm` never fetches content (future hooks can)
 - **Git**: pushes only if an upstream is configured and Git commands are bounded/non-interactive

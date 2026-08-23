@@ -158,6 +158,56 @@ Body text"""
         assert meta == {"tags": []}
         assert body == text
 
+    def test_delimiter_text_inside_value_does_not_close_header(self):
+        """Only a complete delimiter line may close front matter."""
+        text = """---
+url: https://example.com
+title: --- inside a title
+notes: value --- remains a value
+---
+Body
+"""
+        meta, body = parse_front_matter(text)
+        assert meta["title"] == "--- inside a title"
+        assert meta["notes"] == "value --- remains a value"
+        assert body == "Body\n"
+
+    def test_crlf_front_matter_delimiters(self):
+        """Opening, closing, and body boundaries support CRLF input."""
+        text = "---\r\nurl: https://example.com\r\ntitle: Example\r\n---\r\nBody\r\n"
+        meta, body = parse_front_matter(text)
+        assert meta["url"] == "https://example.com"
+        assert meta["title"] == "Example"
+        assert body == "Body\r\n"
+
+    def test_meta_only_matches_full_parse_at_delimiter(self, tmp_path):
+        """Metadata-only reads agree with full reads without loading the body."""
+        from bm.io import load_entry
+
+        text = "---\r\nurl: https://example.com\r\ntitle: --- value\r\n---\r\nBody\r\n"
+        fpath = tmp_path / "x.bm"
+        fpath.write_bytes(text.encode("utf-8"))
+        full_meta, full_body = load_entry(fpath)
+        meta_only, body_only = load_entry(fpath, meta_only=True)
+        assert meta_only == full_meta
+        assert body_only == ""
+        # Path.read_text uses the platform's normal newline translation.
+        assert full_body == "Body\n"
+
+    def test_meta_only_missing_delimiter_matches_missing_full_parse(self, tmp_path):
+        """A missing closing marker must not expose partial metadata."""
+        from bm.io import load_entry
+
+        text = "---\r\nurl: https://example.com\r\ntitle: Example\r\nBody"
+        fpath = tmp_path / "x.bm"
+        fpath.write_bytes(text.encode("utf-8"))
+        full_meta, full_body = load_entry(fpath)
+        meta_only, body_only = load_entry(fpath, meta_only=True)
+        assert full_meta == {"tags": []}
+        assert meta_only == full_meta
+        assert full_body == text.replace("\r\n", "\n")
+        assert body_only == ""
+
     def test_multiline_scalar_build(self):
         """Should build multiline scalars correctly."""
         meta = {"notes": "line1\nline2\nline3"}
@@ -246,6 +296,48 @@ tags: ["tag,with,comma", normal]
 
         assert target.read_text() == "untouched"
         assert link.is_symlink()
+
+    def test_atomic_create_never_replaces_destination(self, tmp_path):
+        """Create-only publication leaves an existing destination untouched."""
+        from bm.io import atomic_create
+
+        fpath = tmp_path / "x.bm"
+        fpath.write_text("existing", encoding="utf-8")
+        with pytest.raises(FileExistsError):
+            atomic_create(fpath, "replacement")
+        assert fpath.read_text(encoding="utf-8") == "existing"
+
+    def test_atomic_create_race_is_rejected_without_overwrite(self, tmp_path, monkeypatch):
+        """A destination created during publication must win without clobbering."""
+        import bm.io as io_mod
+
+        fpath = tmp_path / "x.bm"
+        original_link = io_mod.os.link
+
+        def interfere(source, destination):
+            fpath.write_text("raced", encoding="utf-8")
+            return original_link(source, destination)
+
+        monkeypatch.setattr(io_mod.os, "link", interfere)
+        with pytest.raises(FileExistsError):
+            io_mod.atomic_create(fpath, "replacement")
+        assert fpath.read_text(encoding="utf-8") == "raced"
+
+    def test_atomic_create_does_not_fallback_when_links_are_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Unsupported no-replace publication must fail instead of replacing."""
+        import bm.io as io_mod
+
+        fpath = tmp_path / "x.bm"
+
+        def unavailable(*_args):
+            raise OSError("no links")
+
+        monkeypatch.setattr(io_mod.os, "link", unavailable)
+        with pytest.raises(OSError, match="no links"):
+            io_mod.atomic_create(fpath, "replacement")
+        assert not fpath.exists()
 
     def test_atomic_write_rejects_stale_expected_contents(self, tmp_path):
         """Expected-content writes must not overwrite a newer source file."""

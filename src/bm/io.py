@@ -130,30 +130,36 @@ def _parse_header(header: str) -> Dict[str, Any]:
     return meta
 
 
+def _split_front_matter(text: str) -> Optional[Tuple[str, str]]:
+    """Return header/body when text has complete line-delimited front matter."""
+    if text.startswith("---\r\n"):
+        opening_end = 5
+    elif text.startswith(FM_START):
+        opening_end = len(FM_START)
+    else:
+        return None
+
+    rest = text[opening_end:]
+    offset = 0
+    for line in rest.splitlines(keepends=True):
+        if line.rstrip("\r\n") == "---":
+            end = offset + len(line)
+            return rest[:offset], rest[end:]
+        offset += len(line)
+    return None
+
+
 def parse_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
-    """
-    Simple front matter parser:
-    ---\n
-    key: value
-    ...
-    ---\n
-    <body>
-    Supports:
-      - tags: [a, b, "needs,comma"] or "a, b"
-      - added/updated (legacy) -> normalized to created/modified
-    """
-    if not text.startswith(FM_START):
+    """Parse front matter whose opening and closing markers occupy full lines."""
+    parts = _split_front_matter(text)
+    if parts is None:
+        if text.startswith(FM_START) or text.startswith("---\r\n"):
+            return {"tags": []}, text
         return _parse_no_front_matter(text)
 
-    rest = text[len(FM_START) :]
-    end_idx = rest.find(FM_END)
-    if end_idx == -1:
-        return _normalize_meta({}), text
-
-    header = rest[:end_idx]
-    body = rest[end_idx + len(FM_END) :]
+    header, body = parts
     meta = _parse_header(header)
-    return _normalize_meta(meta), body.lstrip("\n")
+    return _normalize_meta(meta), body.lstrip("\r\n")
 
 
 def _fmt_tag(t: str) -> str:
@@ -184,35 +190,19 @@ def build_text(meta: Dict[str, Any], body: str) -> str:
     return fm + (body or "")
 
 
-_FM_DELIM = b"---\n"
-
-
 def _read_meta_only(fpath: Path) -> str:
-    """Read just enough bytes to locate the closing FM_END marker.
-
-    Falls back to the full file when the second `---` cannot be found
-    in the prefix (so callers see the same behavior as the prior path).
-    """
-    chunk_size = 8192
-    buf = bytearray()
+    """Read through the closing front-matter line without reading the body."""
     with open(fpath, "rb") as f:
-        while True:
-            piece = f.read(chunk_size)
-            if not piece:
+        first = f.readline()
+        if first.rstrip(b"\r\n") != b"---":
+            return (first + f.read()).decode("utf-8", errors="replace")
+
+        lines = [first]
+        for line in f:
+            lines.append(line)
+            if line.rstrip(b"\r\n") == b"---":
                 break
-            buf.extend(piece)
-            if buf.startswith(_FM_DELIM):
-                # Locate the closing delimiter after the opening one.
-                close = buf.find(_FM_DELIM, len(_FM_DELIM))
-                if close != -1:
-                    end = close + len(_FM_DELIM)
-                    return buf[:end].decode("utf-8", errors="replace")
-            elif len(buf) >= len(_FM_DELIM):
-                # Not a front-matter file; let the regular parser handle it.
-                return buf.decode("utf-8", errors="replace") + f.read().decode(
-                    "utf-8", errors="replace"
-                )
-    return buf.decode("utf-8", errors="replace")
+        return b"".join(lines).decode("utf-8", errors="replace")
 
 
 def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Dict[str, Any], str]:
@@ -265,24 +255,29 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def _write_temp(fd: int, data: str) -> None:
+    """Write and fsync a temporary text file before publishing it."""
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> None:
     """Write data to path atomically and, when requested, only if unchanged.
 
     Refuses to overwrite an existing symlink at ``path`` so a planted symlink
     cannot redirect the write outside the store. ``expected`` is the byte
     snapshot read by a caller performing a read/modify/write operation; a
-    mismatch raises :class:`ConflictError` and leaves the
-    existing file untouched.
+    mismatch raises :class:`ConflictError` and leaves the existing file
+    untouched.
     """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         _refuse_symlink(path)
         if expected is not None:
             _check_expected(path, expected)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        _write_temp(fd, data)
         # Recheck the symlink policy before the final optimistic-content check.
         # A portable filesystem compare-and-swap is unavailable, so an external
         # writer can still race the check and replace; callers get conflict
@@ -302,3 +297,50 @@ def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> Non
         except OSError:
             pass
         raise
+
+
+def atomic_create(path: Path, data: str) -> None:
+    """Create a file without replacing a destination that appears concurrently.
+
+    Data is written and fsynced to a same-directory temporary file first. A
+    hard link publishes that complete file atomically and fails with
+    ``FileExistsError`` when another writer wins. Filesystems without hard-link
+    support fail explicitly; this function never falls back to replacement. A
+    crash after publication can leave the temporary hard-link name behind, but
+    the destination remains complete and no existing file is overwritten.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        _refuse_symlink(path)
+        _write_temp(fd, data)
+        _refuse_symlink(path)
+        os.link(tmp_name, path)
+        _fsync_directory(path.parent)
+        os.unlink(tmp_name)
+        _fsync_directory(path.parent)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_move_no_replace(source: Path, destination: Path) -> None:
+    """Move a file without replacing a destination, using link-then-unlink.
+
+    The destination link is created atomically and fails if it already exists.
+    A crash after linking but before unlinking the source can leave both names;
+    it cannot destroy or overwrite either file. Unsupported hard links fail
+    explicitly rather than falling back to replacing rename semantics.
+    """
+    _refuse_symlink(source)
+    _refuse_symlink(destination)
+    os.link(source, destination)
+    _fsync_directory(destination.parent)
+    os.unlink(source)
+    _fsync_directory(source.parent)

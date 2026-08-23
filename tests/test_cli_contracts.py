@@ -61,6 +61,22 @@ def test_real_cli_mutation_and_json_contracts(tmp_path, capsys):
     assert json.loads(lines[0])["url"] == "https://example.com/docs"
 
 
+def test_real_cli_rejects_invalid_since_and_conflicting_output_modes(tmp_path, capsys):
+    """Invalid filters and ambiguous output flags fail at the public CLI boundary."""
+    store = tmp_path / "store"
+    assert _run(store, "init") == 0
+    capsys.readouterr()
+
+    assert _run(store, "list", "--since", "not-a-date") == 2
+    assert "invalid --since value" in capsys.readouterr().err
+
+    assert _run(store, "list", "--json", "--jsonl") == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+    assert _run(store, "search", "anything", "--json", "--jsonl") == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_real_cli_maps_invalid_path_not_found_and_no_result(tmp_path, capsys):
     """Expected command failures retain their established statuses and text."""
     store = tmp_path / "store"

@@ -165,6 +165,11 @@ for embedding/tests. The console script and `python -m bm` remain the process-ex
 wrappers. Runtime remains stdlib-only and the `.bm` format/unknown metadata behavior is
 unchanged.
 
+No-force creation and moves use hard-link publication without replacement. Unsupported
+hard links fail explicitly. A crash after creation publication may leave a temporary
+hard-link name; a crash during link-then-unlink move may leave both names. Neither case
+overwrites an existing destination.
+
 ## Per-group workflow
 
 For each group:

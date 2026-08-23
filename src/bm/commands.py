@@ -155,7 +155,13 @@ def cmd_add(args) -> None:
                 file=sys.stderr,
             )
 
-    store.write(fpath, build_text(meta, body))
+    try:
+        if args.force:
+            store.write(fpath, build_text(meta, body))
+        else:
+            store.create_entry(fpath, build_text(meta, body))
+    except FileExistsError as exc:
+        raise BmError(f"bookmark exists: {slug} (use --force to overwrite)") from exc
     print(rid(meta.get("url", "")))
 
 
@@ -214,6 +220,8 @@ def _filter_spec_from_args(args) -> FilterSpec:
     path = text_value("path").strip("/")
     since_text = text_value("since")
     since = parse_iso(since_text) if since_text else None
+    if since_text and since is None:
+        raise BmError(f"invalid --since value: {since_text!r}", exit_code=2)
     return FilterSpec(tag=tag, host=host, path=path, since=since)
 
 
@@ -597,7 +605,15 @@ def cmd_import(args) -> None:
             continue
         if fpath.exists() and not args.force:
             continue
-        store.write(fpath, build_text(meta, ""))
+        try:
+            if args.force:
+                store.write(fpath, build_text(meta, ""))
+            else:
+                store.create_entry(fpath, build_text(meta, ""))
+        except FileExistsError:
+            # Preserve import's existing no-force skip behavior when the
+            # destination already exists or another writer wins publication.
+            continue
         written += 1
         _progress_tick("import", written)
     _progress_done("import", written)

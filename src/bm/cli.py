@@ -129,8 +129,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     p = sp.add_parser("list", help="List all entries")
     _add_filter_flags(p)
-    p.add_argument("--json", action="store_true", help="Emit JSON array")
-    p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="Emit JSON array")
+    output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_list)
 
     p = sp.add_parser(
@@ -155,8 +156,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         choices=["title", "url", "tags", "body"],
         help="Restrict search to a field (repeatable; default: all four)",
     )
-    p.add_argument("--json", action="store_true", help="Emit JSON array")
-    p.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="Emit JSON array")
+    output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_search)
 
     p = sp.add_parser("edit", help="Edit with $EDITOR / $VISUAL")
