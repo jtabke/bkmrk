@@ -70,9 +70,44 @@ class TestCmdInit:
         args.git = True
 
         with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(_git_cmd("init"), 0)
             cmd_init(args)
 
-        mock_run.assert_called_once_with(_git_cmd("init"), cwd=store)
+        mock_run.assert_called_once()
+        command, kwargs = mock_run.call_args
+        assert command[0] == _git_cmd("init")
+        assert kwargs["cwd"] == store
+        assert kwargs["check"] is True
+        assert kwargs["timeout"] == 30
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_init_git_failure_does_not_report_success(self, tmp_path, capsys):
+        """A failed git init must not print the success message."""
+        from bm.commands import _git_cmd
+
+        store = tmp_path / "store"
+        args = MagicMock(store=str(store), git=True)
+        error = subprocess.CalledProcessError(returncode=7, cmd=_git_cmd("init"))
+
+        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+            cmd_init(args)
+
+        assert exc.value.code == 7
+        assert "Initialized git repository." not in capsys.readouterr().out
+
+    def test_init_git_timeout_is_bounded(self, tmp_path, capsys):
+        """A hung git init must produce a deterministic timeout error."""
+        from bm.commands import _git_cmd
+
+        store = tmp_path / "store"
+        args = MagicMock(store=str(store), git=True)
+        error = subprocess.TimeoutExpired(_git_cmd("init"), timeout=30)
+
+        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+            cmd_init(args)
+
+        assert exc.value.code == 124
+        assert "git command timed out after 30s" in capsys.readouterr().err
 
     def test_init_without_git_does_not_call_git(self, tmp_path):
         """Should not call git if not requested."""
@@ -1527,6 +1562,58 @@ created: 2023-01-17T10:00:00Z
         )
         assert dev_index < python_index < fastapi_index
 
+    def test_export_import_netscape_escapes_special_characters(self, tmp_path, capsys):
+        """Netscape export/import preserves metadata and safely renders folder text."""
+        import argparse
+
+        from bm.io import build_text
+
+        source = tmp_path / "source"
+        target = tmp_path / "target"
+        source_folder = source / 'folder&<"quoted">'
+        source_folder.mkdir(parents=True)
+        target.mkdir()
+        url = 'https://example.com/?q="quoted"&x=<tag>'
+        title = 'A <title> & "quoted" with literal &amp; text'
+        tags = ["rock&roll", "<angle>", "literal&#34;"]
+        (source_folder / "entry.bm").write_text(
+            build_text(
+                {"url": url, "title": title, "tags": tags, "created": "2024-01-01T00:00:00Z"},
+                "",
+            ),
+            encoding="utf-8",
+        )
+
+        cmd_export(
+            argparse.Namespace(
+                store=str(source),
+                fmt="netscape",
+                tag=None,
+                host=None,
+                since=None,
+                path=None,
+            )
+        )
+        exported = capsys.readouterr().out
+        assert 'HREF="https://example.com/?q=&quot;quoted&quot;&amp;x=&lt;tag&gt;"' in exported
+        assert 'TAGS="rock&amp;roll,&lt;angle&gt;,literal&amp;#34;"' in exported
+        assert "folder&amp;&lt;&quot;quoted&quot;&gt;" in exported
+        assert "A &lt;title&gt; &amp; &quot;quoted&quot; with literal &amp;amp; text" in exported
+
+        exported_file = tmp_path / "bookmarks.html"
+        exported_file.write_text(exported, encoding="utf-8")
+        cmd_import(argparse.Namespace(store=str(target), file=str(exported_file), force=False))
+        capsys.readouterr()
+
+        imported_files = list(target.rglob("*.bm"))
+        assert len(imported_files) == 1
+        # Import applies the same path normalization as CLI-created bookmarks.
+        assert imported_files[0].parent.relative_to(target).as_posix() == "folderquoted"
+        imported, _ = load_entry(imported_files[0])
+        assert imported["url"] == url
+        assert imported["title"] == title
+        assert imported["tags"] == tags
+
 
 class TestCmdOpen:
     """Test cmd_open function."""
@@ -2457,8 +2544,8 @@ class TestCmdSync:
         assert len(calls) == 3
         assert all(call[0][0] != push for call in calls)
 
-    def test_sync_surfaces_git_failure(self, tmp_path):
-        """Should exit if a git command fails."""
+    def test_sync_surfaces_git_failure(self, tmp_path, capsys):
+        """Should exit with a deterministic diagnostic if git fails."""
         from bm.commands import _git_cmd
 
         store = tmp_path / "store"
@@ -2477,11 +2564,12 @@ class TestCmdSync:
                 cmd_sync(args)
 
         assert exc_info.value.code == 5
+        assert "git command failed" in capsys.readouterr().err
         first_call = mock_run.call_args_list[0]
         assert first_call[0][0] == _git_cmd("add", "-A")
 
     def test_sync_uses_hardened_git_prefix(self, tmp_path):
-        """Every git invocation should pass the hardening -c overrides."""
+        """Every git invocation should pass hardening and bounded-run options."""
         store = tmp_path / "store"
         store.mkdir()
         (store / ".git").mkdir()
@@ -2508,6 +2596,25 @@ class TestCmdSync:
                 "-c",
                 "protocol.file.allow=user",
             ]
+            assert call.kwargs["timeout"] == 30
+            assert call.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+            assert call.kwargs["check"] is (cmd[-4] != "rev-parse")
+
+    def test_sync_timeout_is_bounded(self, tmp_path, capsys):
+        """A hung sync command must stop at the configured timeout."""
+        from bm.commands import _git_cmd
+
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / ".git").mkdir()
+        args = MagicMock(store=str(store))
+        error = subprocess.TimeoutExpired(_git_cmd("push"), timeout=30)
+
+        with patch("subprocess.run", side_effect=error), pytest.raises(SystemExit) as exc:
+            cmd_sync(args)
+
+        assert exc.value.code == 124
+        assert "git command timed out after 30s" in capsys.readouterr().err
 
 
 class TestCmdTag:

@@ -70,7 +70,7 @@ def cmd_init(args) -> None:
         if (store / ".git").exists():
             print("Git repo already exists.")
         else:
-            subprocess.run(_git_cmd("init"), cwd=store)
+            _run_git(store, "init")
             print("Initialized git repository.")
     readme = store / "README.txt"
     if not readme.exists():
@@ -772,20 +772,23 @@ def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
     # meta has url, title, etc.
 
     def build_html(node: Dict[str, Any]) -> str:
-        html = ""
+        output = ""
         # first bookmarks, then folders
         bookmarks = node.get("__bookmarks__", [])
         for bm in bookmarks:
-            html += bm
+            output += bm
         for key, value in sorted(node.items()):
             if key == "__bookmarks__":
                 continue
             if isinstance(value, dict):
-                # folder
-                html += f"<DT><H3>{key}</H3>\n<DL><p>\n"
-                html += build_html(value)
-                html += "</DL><p>\n"
-        return html
+                # Folder names are element text, but escaping quotes as well
+                # keeps generated HTML safe if the path came from a custom
+                # store rather than a normalized CLI slug.
+                folder_name = html.escape(str(key), quote=True)
+                output += f"<DT><H3>{folder_name}</H3>\n<DL><p>\n"
+                output += build_html(value)
+                output += "</DL><p>\n"
+        return output
 
     root = {}
     for path, meta in entries:
@@ -799,14 +802,9 @@ def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
         if "__bookmarks__" not in current:
             current["__bookmarks__"] = []
         add_date = to_epoch(parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))) or ""
-        tags = ",".join(meta.get("tags", []))
-        title = (
-            (meta.get("title") or meta.get("url") or "")
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        url = (meta.get("url") or "").replace("&", "&amp;").replace('"', "&quot;")
+        tags = html.escape(",".join(str(tag) for tag in meta.get("tags", [])), quote=True)
+        title = html.escape(str(meta.get("title") or meta.get("url") or ""), quote=True)
+        url = html.escape(str(meta.get("url") or ""), quote=True)
         bookmark_html = f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n'
         current["__bookmarks__"].append(bookmark_html)
 
@@ -874,10 +872,12 @@ def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
         # BOOKMARK: <DT><A ... HREF="...">Title</A>
         m = _RE_NETSCAPE_BOOKMARK.search(line)
         if m:
-            url, title_html = m.group(1), m.group(2)
+            url = html.unescape(m.group(1))
+            title_html = m.group(2)
             title = html.unescape(_RE_HTML_TAG.sub("", title_html))
             tagm = _RE_NETSCAPE_TAGS.search(line)
-            tags = [t.strip() for t in (tagm.group(1) if tagm else "").split(",") if t.strip()]
+            raw_tags = html.unescape(tagm.group(1)) if tagm else ""
+            tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
             path = "/".join(folder_stack) if folder_stack else ""
             meta = {
                 "url": url,
@@ -966,10 +966,60 @@ _GIT_HARDENED_PREFIX = (
     "-c",
     "protocol.file.allow=user",
 )
+_GIT_TIMEOUT_SECONDS = 30
 
 
 def _git_cmd(*args: str) -> List[str]:
     return [*_GIT_HARDENED_PREFIX, *args]
+
+
+def _run_git(
+    store: Path,
+    *args: str,
+    check: bool = True,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a hardened, bounded, non-interactive Git command.
+
+    All Git subprocesses go through this seam so repository-local configuration
+    cannot re-enable command execution and network operations cannot wait
+    forever for credentials or a remote response.
+    """
+    command = _git_cmd(*args)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            command,
+            cwd=store,
+            check=check,
+            capture_output=capture_output,
+            text=capture_output,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        die(
+            f"git command timed out after {_GIT_TIMEOUT_SECONDS}s: {' '.join(command)}",
+            code=124,
+        )
+    except subprocess.CalledProcessError as exc:
+        die(
+            f"git command failed ({' '.join(command)}): exit {exc.returncode}",
+            code=exc.returncode or 1,
+        )
+    except OSError as exc:
+        die(f"git command failed ({' '.join(command)}): {exc}", code=2)
+
+    # ``check=True`` guarantees this for the real subprocess implementation;
+    # retaining the explicit check keeps the seam deterministic for callers
+    # that provide a subprocess test double.
+    if check and result.returncode:
+        die(
+            f"git command failed ({' '.join(command)}): exit {result.returncode}",
+            code=result.returncode or 1,
+        )
+    return result
 
 
 def cmd_sync(args) -> None:
@@ -978,26 +1028,21 @@ def cmd_sync(args) -> None:
     if not (store / ".git").exists():
         die("store is not a git repo; run: bm init --git", code=2)
 
-    def run_git(cmd: List[str]) -> None:
-        try:
-            subprocess.run(cmd, cwd=store, check=True)
-        except subprocess.CalledProcessError as exc:
-            die(
-                f"git command failed ({' '.join(cmd)}): exit {exc.returncode}",
-                code=exc.returncode or 1,
-            )
-
-    run_git(_git_cmd("add", "-A"))
-    run_git(_git_cmd("commit", "-m", "bm sync", "--allow-empty"))
-    # push only if upstream exists
-    r = subprocess.run(
-        _git_cmd("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"),
-        cwd=store,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    _run_git(store, "add", "-A")
+    _run_git(store, "commit", "-m", "bm sync", "--allow-empty")
+    # A nonzero rev-parse means no upstream is configured; it is expected and
+    # should not be reported as a sync failure.
+    upstream = _run_git(
+        store,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{u}",
+        check=False,
+        capture_output=True,
     )
-    if r.returncode == 0:
-        run_git(_git_cmd("push"))
+    if upstream.returncode == 0:
+        _run_git(store, "push")
 
 
 def resolve_id_or_path(store: Path, token: str) -> Optional[Path]:
