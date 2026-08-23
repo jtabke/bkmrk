@@ -1,8 +1,8 @@
 """Pure Netscape bookmark HTML parsing and rendering."""
 
 import html
-import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
 
 from .utils import parse_iso, to_epoch
@@ -15,12 +15,79 @@ NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 """
 NETSCAPE_FOOTER = "</DL><p>\n"
 
-_RE_NETSCAPE_FOLDER = re.compile(r"<DT>\s*<H3\b[^>]*>(.*?)</H3>", re.I)
-_RE_NETSCAPE_BOOKMARK = re.compile(r"<DT>\s*<A\b[^>]*HREF=\"([^\"]+)\"[^>]*>(.*?)</A>", re.I)
-_RE_NETSCAPE_TAGS = re.compile(r'\bTAGS="([^\"]*)"', re.I)
-_RE_NETSCAPE_ADDDATE = re.compile(r'\bADD_DATE="(\d+)"')
-_RE_NETSCAPE_DLEND = re.compile(r"</DL\b", re.I)
-_RE_HTML_TAG = re.compile(r"<[^>]+>")
+
+class _NetscapeParser(HTMLParser):
+    """Collect Netscape bookmarks while tolerating HTML layout variations."""
+
+    def __init__(self, default_created: Optional[str]) -> None:
+        super().__init__(convert_charrefs=True)
+        self.entries: List[Tuple[str, Dict[str, Any]]] = []
+        self.folder_stack: List[str] = []
+        self.default_created = default_created
+        self._folder_text: Optional[List[str]] = None
+        self._bookmark: Optional[Dict[str, Optional[str]]] = None
+        self._bookmark_title: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag == "h3":
+            self._folder_text = []
+        elif tag == "a":
+            if self._bookmark is not None:
+                self._finish_bookmark()
+            attributes = {name: value for name, value in attrs}
+            self._bookmark = {
+                "url": attributes.get("href"),
+                "tags": attributes.get("tags"),
+                "add_date": attributes.get("add_date"),
+            }
+            self._bookmark_title = []
+
+    def handle_data(self, data: str) -> None:
+        if self._folder_text is not None:
+            self._folder_text.append(data)
+        if self._bookmark is not None:
+            self._bookmark_title.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "h3" and self._folder_text is not None:
+            self.folder_stack.append("".join(self._folder_text).strip())
+            self._folder_text = None
+        elif tag == "a" and self._bookmark is not None:
+            self._finish_bookmark()
+        elif tag == "dl" and self.folder_stack:
+            self.folder_stack.pop()
+
+    def finish(self) -> None:
+        """Finalize a truncated trailing bookmark after all input is consumed."""
+        if self._bookmark is not None:
+            self._finish_bookmark()
+
+    def _finish_bookmark(self) -> None:
+        bookmark = self._bookmark
+        self._bookmark = None
+        url = bookmark["url"]
+        if url is None:
+            return
+
+        raw_tags = bookmark["tags"] or ""
+        tags = [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
+        meta: Dict[str, Any] = {
+            "url": url,
+            "title": "".join(self._bookmark_title).strip(),
+            "tags": tags,
+        }
+        if self.default_created is not None:
+            meta["created"] = self.default_created
+
+        add_date = bookmark["add_date"]
+        if add_date and add_date.isascii() and add_date.isdigit():
+            try:
+                meta["created"] = datetime.fromtimestamp(int(add_date), tz=timezone.utc).isoformat()
+            except (OverflowError, OSError, ValueError):
+                pass
+
+        path = "/".join(self.folder_stack) if self.folder_stack else ""
+        self.entries.append((path, meta))
 
 
 def build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
@@ -63,50 +130,11 @@ def parse_netscape_html(
 
     ``default_created`` is supplied by the application boundary for imports
     without an ``ADD_DATE`` attribute, keeping this parser deterministic.
+    ``HTMLParser`` handles compact/minified input, mixed-case markup, and
+    entity decoding while remaining deliberately best-effort for malformed HTML.
     """
-    entries: List[Tuple[str, Dict[str, Any]]] = []
-    folder_stack: List[str] = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        folder = _RE_NETSCAPE_FOLDER.search(line)
-        if folder:
-            folder_stack.append(html.unescape(folder.group(1)))
-            i += 1
-            continue
-
-        bookmark = _RE_NETSCAPE_BOOKMARK.search(line)
-        if bookmark:
-            url = html.unescape(bookmark.group(1))
-            title_html = bookmark.group(2)
-            title = html.unescape(_RE_HTML_TAG.sub("", title_html))
-            tag_match = _RE_NETSCAPE_TAGS.search(line)
-            raw_tags = html.unescape(tag_match.group(1)) if tag_match else ""
-            tags = [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
-            meta: Dict[str, Any] = {
-                "url": url,
-                "title": title.strip(),
-                "tags": tags,
-            }
-            if default_created is not None:
-                meta["created"] = default_created
-            add_date = _RE_NETSCAPE_ADDDATE.search(line)
-            if add_date:
-                try:
-                    meta["created"] = datetime.fromtimestamp(
-                        int(add_date.group(1)), tz=timezone.utc
-                    ).isoformat()
-                except (OverflowError, OSError, ValueError):
-                    pass
-            entries.append(("/".join(folder_stack) if folder_stack else "", meta))
-            i += 1
-            continue
-
-        if _RE_NETSCAPE_DLEND.match(line):
-            if folder_stack:
-                folder_stack.pop()
-            i += 1
-            continue
-        i += 1
-    return entries
+    parser = _NetscapeParser(default_created)
+    parser.feed(text)
+    parser.close()
+    parser.finish()
+    return parser.entries
