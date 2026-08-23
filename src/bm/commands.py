@@ -1,6 +1,5 @@
 """Command implementations for the bookmark manager."""
 
-import html
 import json
 import os
 import re
@@ -9,14 +8,16 @@ import sys
 import tempfile
 import textwrap
 import webbrowser
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
+from .dedupe import _merge_entry_group, _select_survivor
 from .errors import UnsafePathError
 from .io import build_text, load_entry, parse_front_matter
 from .models import FILE_EXT, default_store
+from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_html
+from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, search_rows
 from .store import Store
 from .utils import (
     _launch_editor,
@@ -29,7 +30,6 @@ from .utils import (
     normalize_url_for_compare,
     parse_iso,
     rid,
-    to_epoch,
 )
 
 ALLOWED_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps", "mailto"})
@@ -223,209 +223,29 @@ def _iter_entries(
         yield entry.path, entry.relative_path, entry.meta, entry.body
 
 
-def _matches_tag(rel, meta, tag):
-    if not tag:
-        return True
-    return tag in rel.parts[:-1] or tag in meta.get("tags", [])
+def _filter_spec_from_args(args) -> FilterSpec:
+    """Validate CLI filter values and build one immutable query specification."""
+    values = vars(args)
+
+    def text_value(name: str) -> str:
+        value = values.get(name)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise TypeError(f"--{name} must be a string")
+        return value
+
+    tag = text_value("tag") or None
+    host = text_value("host").lower()
+    path = text_value("path").strip("/")
+    since_text = text_value("since")
+    since = parse_iso(since_text) if since_text else None
+    return FilterSpec(tag=tag, host=host, path=path, since=since)
 
 
-def _matches_host(meta, want_host):
-    if not want_host:
-        return True
-    host = urlparse(meta.get("url", "")).netloc.lower()
-    if host.startswith("www."):
-        host = host[4:]
-    hq = want_host[4:] if want_host.startswith("www.") else want_host
-    return host == hq
-
-
-def _matches_since(meta, since_dt):
-    if not since_dt:
-        return True
-    ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-    return bool(ts and ts >= since_dt)
-
-
-def _matches_path(rel, path_prefix):
-    if not path_prefix:
-        return True
-    # Normalize path prefix (remove leading/trailing slashes)
-    path_prefix = path_prefix.strip("/")
-    if not path_prefix:
-        return True
-    # Check if relative path starts with the prefix
-    rel_str = str(rel)
-    return rel_str.startswith(path_prefix + "/") or rel_str == path_prefix
-
-
-def _normalize_path_arg(value: Any) -> str:
-    """Coerce an `args.path` value to a clean stripped string."""
-    if value and isinstance(value, str):
-        return value.strip("/")
-    return ""
-
-
-def _resolve_filter_args(args) -> Tuple[Optional[str], str, str, Optional[datetime]]:
-    """Extract the standard (tag, host, path, since_dt) filter tuple from args.
-
-    Only string values are honored — non-string sentinels (e.g. MagicMock from
-    tests) collapse to "no filter" instead of raising at compare time.
-    """
-    tag_raw = getattr(args, "tag", None)
-    tag = tag_raw if isinstance(tag_raw, str) and tag_raw else None
-    host_raw = getattr(args, "host", None)
-    host = host_raw.lower() if isinstance(host_raw, str) else ""
-    path = _normalize_path_arg(getattr(args, "path", None))
-    since_raw = getattr(args, "since", None)
-    since_dt = parse_iso(since_raw) if isinstance(since_raw, str) and since_raw else None
-    return tag, host, path, since_dt
-
-
-def _passes_filters(rel, meta, tag, host, path, since_dt) -> bool:
-    return (
-        _matches_tag(rel, meta, tag)
-        and _matches_host(meta, host)
-        and _matches_path(rel, path)
-        and _matches_since(meta, since_dt)
-    )
-
-
-def _entry_score(entry: Dict[str, Any]) -> Tuple[int, int, float, str]:
-    body_len = len(entry["body"].strip())
-    title_len = len(entry["meta"].get("title", "").strip())
-    created_dt = parse_iso(entry["meta"].get("created")) or parse_iso(entry["meta"].get("modified"))
-    if created_dt and created_dt.tzinfo is None:
-        created_dt = created_dt.replace(tzinfo=timezone.utc)
-    created_ts = created_dt.timestamp() if created_dt else float("inf")
-    return (-body_len, -title_len, created_ts, str(entry["rel"]))
-
-
-def _select_survivor(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return min(entries, key=_entry_score)
-
-
-def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
-    if dt and dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _earliest_dt(current: Optional[datetime], candidate: Optional[datetime]) -> Optional[datetime]:
-    candidate = _normalize_dt(candidate)
-    if candidate is None:
-        return current
-    if current is None or candidate < current:
-        return candidate
-    return current
-
-
-def _latest_dt(current: Optional[datetime], candidate: Optional[datetime]) -> Optional[datetime]:
-    candidate = _normalize_dt(candidate)
-    if candidate is None:
-        return current
-    if current is None or candidate > current:
-        return candidate
-    return current
-
-
-def _collect_group_stats(
-    entries: List[Dict[str, Any]],
-) -> Tuple[Set[str], Optional[datetime], Optional[datetime], List[str]]:
-    tags_union: Set[str] = set()
-    earliest_created: Optional[datetime] = None
-    latest_modified: Optional[datetime] = None
-    title_candidates: List[str] = []
-
-    for entry in entries:
-        meta = entry["meta"]
-        tags_union.update(t.strip() for t in meta.get("tags", []) if t.strip())
-        tags_union.update(seg for seg in entry["rel"].parts[:-1] if seg)
-
-        title = meta.get("title", "").strip()
-        if title:
-            title_candidates.append(title)
-
-        earliest_created = _earliest_dt(earliest_created, parse_iso(meta.get("created")))
-        latest_modified = _latest_dt(latest_modified, parse_iso(meta.get("modified")))
-
-    return tags_union, earliest_created, latest_modified, title_candidates
-
-
-def _collect_body_parts(
-    entries: List[Dict[str, Any]], survivor: Dict[str, Any]
-) -> Tuple[List[str], bool]:
-    base_body = survivor["body"].rstrip()
-    parts: List[str] = [base_body] if base_body else []
-    notes_appended = False
-
-    for entry in entries:
-        if entry is survivor:
-            continue
-        extra_body = entry["body"].rstrip()
-        if extra_body:
-            notes_appended = True
-            parts.append(f"[Merged from {entry['rel']}]\n{extra_body}".rstrip())
-
-    return parts, notes_appended
-
-
-def _join_body_parts(parts: List[str]) -> str:
-    clean = [part for part in parts if part]
-    if not clean:
-        return ""
-    merged = "\n\n".join(clean)
-    return merged.rstrip() + "\n"
-
-
-def _merge_entry_group(
-    entries: List[Dict[str, Any]], survivor: Dict[str, Any]
-) -> Tuple[Dict[str, Any], str, List[str], bool, Optional[datetime], Optional[datetime]]:
-    merged_meta = dict(survivor["meta"])
-    tags_union, earliest_created, latest_modified, title_candidates = _collect_group_stats(entries)
-
-    if title_candidates and not merged_meta.get("title"):
-        title_candidates.sort(key=len, reverse=True)
-        merged_meta["title"] = title_candidates[0]
-
-    if earliest_created:
-        merged_meta["created"] = earliest_created.isoformat()
-
-    if latest_modified:
-        merged_meta["modified"] = latest_modified.isoformat()
-
-    body_parts, notes_appended = _collect_body_parts(entries, survivor)
-    tags = sorted(t for t in tags_union if t)
-    merged_body = _join_body_parts(body_parts)
-
-    return merged_meta, merged_body, tags, notes_appended, earliest_created, latest_modified
-
-
-def _build_row(rel, meta, ts):
-    url = meta.get("url", "")
-    return {
-        "id": rid(url),
-        "path": str(rel),
-        "title": meta.get("title", ""),
-        "url": url,
-        "tags": meta.get("tags", []),
-        "created": meta.get("created", ""),
-        "modified": meta.get("modified", ""),
-        "_sort": ts or datetime.min.replace(tzinfo=timezone.utc),
-    }
-
-
-def _collect_rows(store: Path, args) -> List[dict]:
-    rows = []
-    tag, host, path, since_dt = _resolve_filter_args(args)
-    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not _passes_filters(rel, meta, tag, host, path, since_dt):
-            continue
-        ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-        rows.append(_build_row(rel, meta, ts))
-    rows.sort(key=lambda r: r["_sort"], reverse=True)
-    for r in rows:
-        r.pop("_sort", None)
-    return rows
+def _collect_rows(store: Store, filters: FilterSpec) -> List[dict]:
+    entries = ((rel, meta) for _, rel, meta, _ in _iter_entries(store, meta_only=True))
+    return collect_rows(entries, filters)
 
 
 def _output_rows(rows: List[dict], args):
@@ -445,57 +265,31 @@ def cmd_list(args) -> None:
     """List bookmarks."""
     store = _store_from_args(args)
     _require_store(store, f"store not found: {store.root}")
-    rows = _collect_rows(store, args)
+    rows = _collect_rows(store, _filter_spec_from_args(args))
     _output_rows(rows, args)
 
 
-_SEARCH_FIELDS = ("title", "url", "tags", "body")
+def _search_fields_from_args(args) -> Tuple[str, ...]:
+    fields_arg = vars(args).get("field")
+    if fields_arg is None:
+        return SEARCH_FIELDS
+    if not isinstance(fields_arg, list) or not fields_arg:
+        raise TypeError("--field must be a non-empty list")
+    return tuple(fields_arg)
 
 
-def _build_search_blob(meta: Dict[str, Any], body: str, fields: Tuple[str, ...]) -> str:
-    parts = []
-    for f in fields:
-        if f == "title":
-            parts.append(meta.get("title", ""))
-        elif f == "url":
-            parts.append(meta.get("url", ""))
-        elif f == "tags":
-            parts.append(" ".join(meta.get("tags", [])))
-        elif f == "body":
-            parts.append(body)
-    return "\n".join(parts)
+def _search_regex_from_args(args) -> bool:
+    use_regex = vars(args).get("regex", False)
+    if not isinstance(use_regex, bool):
+        raise TypeError("--regex must be a boolean")
+    return use_regex
 
 
-def _make_search_predicate(query: str, use_regex: bool):
-    """Return `pred(blob_lower) -> bool` for the configured query mode."""
-    if use_regex:
-        try:
-            pattern = re.compile(query, re.IGNORECASE)
-        except re.error as exc:
-            die(f"invalid --regex pattern: {exc}", code=2)
-        return lambda blob: bool(pattern.search(blob))
-    terms = query.lower().split()
-    return lambda blob: all(term in blob for term in terms)
-
-
-def cmd_search(args) -> None:
-    """Search bookmarks."""
-    store = _store_from_args(args)
-    fields_arg = getattr(args, "field", None)
-    fields = (
-        tuple(fields_arg)
-        if isinstance(fields_arg, (list, tuple)) and fields_arg
-        else _SEARCH_FIELDS
-    )
-    use_regex = getattr(args, "regex", False) is True
-    matches = _make_search_predicate(args.query, use_regex)
-    tag, host, path, since_dt = _resolve_filter_args(args)
+def _search_entries(store: Store, filters: FilterSpec, fields: Tuple[str, ...]):
+    """Yield filtered entries while retaining metadata-only body loading."""
     needs_body = "body" in fields
-    hits = []
-    # First pass uses meta_only so only entries that pass the meta filters pay
-    # for a full body read (and only when body is in scope).
     for p, rel, meta, _ in _iter_entries(store, meta_only=True):
-        if not _passes_filters(rel, meta, tag, host, path, since_dt):
+        if not passes_filters(rel, meta, filters):
             continue
         body = ""
         if needs_body:
@@ -503,15 +297,25 @@ def cmd_search(args) -> None:
                 _, body = load_entry(p)
             except (OSError, ValueError, UnicodeError):
                 continue
-        blob = _build_search_blob(meta, body, fields)
-        if not use_regex:
-            blob = blob.lower()
-        if matches(blob):
-            ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
-            hits.append(_build_row(rel, meta, ts))
-    hits.sort(key=lambda r: r["_sort"], reverse=True)
-    for r in hits:
-        r.pop("_sort", None)
+        yield rel, meta, body
+
+
+def cmd_search(args) -> None:
+    """Search bookmarks."""
+    store = _store_from_args(args)
+    fields = _search_fields_from_args(args)
+    use_regex = _search_regex_from_args(args)
+    filters = _filter_spec_from_args(args)
+    try:
+        hits = search_rows(
+            _search_entries(store, filters, fields),
+            filters,
+            args.query,
+            fields,
+            use_regex,
+        )
+    except re.error as exc:
+        die(f"invalid --regex pattern: {exc}", code=2)
 
     _output_rows(hits, args)
     if not hits:
@@ -753,68 +557,6 @@ def cmd_tag(args) -> None:
     store.write(p, build_text(meta, body), expected=original)
 
 
-NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
-<!-- This is an automatically generated file. -->
-<TITLE>Bookmarks</TITLE>
-<H1>Bookmarks</H1>
-<DL><p>
-"""
-NETSCAPE_FOOTER = "</DL><p>\n"
-
-_RE_NETSCAPE_FOLDER = re.compile(r"<DT>\s*<H3\b[^>]*>(.*?)</H3>", re.I)
-_RE_NETSCAPE_BOOKMARK = re.compile(r"<DT>\s*<A\b[^>]*HREF=\"([^\"]+)\"[^>]*>(.*?)</A>", re.I)
-_RE_NETSCAPE_TAGS = re.compile(r'\bTAGS="([^"]*)"', re.I)
-_RE_NETSCAPE_ADDDATE = re.compile(r'\bADD_DATE="(\d+)"')
-_RE_NETSCAPE_DLEND = re.compile(r"</DL\b", re.I)
-_RE_HTML_TAG = re.compile(r"<[^>]+>")
-
-
-def _build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
-    """Build Netscape HTML with folder hierarchy from entries."""
-    # entries: list of (path, meta)
-    # path is like "dev/python/fastapi-abc"
-    # meta has url, title, etc.
-
-    def build_html(node: Dict[str, Any]) -> str:
-        output = ""
-        # first bookmarks, then folders
-        bookmarks = node.get("__bookmarks__", [])
-        for bm in bookmarks:
-            output += bm
-        for key, value in sorted(node.items()):
-            if key == "__bookmarks__":
-                continue
-            if isinstance(value, dict):
-                # Folder names are element text, but escaping quotes as well
-                # keeps generated HTML safe if the path came from a custom
-                # store rather than a normalized CLI slug.
-                folder_name = html.escape(str(key), quote=True)
-                output += f"<DT><H3>{folder_name}</H3>\n<DL><p>\n"
-                output += build_html(value)
-                output += "</DL><p>\n"
-        return output
-
-    root = {}
-    for path, meta in entries:
-        parts = path.split("/")
-        current = root
-        for part in parts[:-1]:  # all but last are folders
-            if part not in current:
-                current[part] = {}
-            current = current[part]
-        # now current is the dict for the folder containing the bookmark
-        if "__bookmarks__" not in current:
-            current["__bookmarks__"] = []
-        add_date = to_epoch(parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))) or ""
-        tags = html.escape(",".join(str(tag) for tag in meta.get("tags", [])), quote=True)
-        title = html.escape(str(meta.get("title") or meta.get("url") or ""), quote=True)
-        url = html.escape(str(meta.get("url") or ""), quote=True)
-        bookmark_html = f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n'
-        current["__bookmarks__"].append(bookmark_html)
-
-    return build_html(root)
-
-
 def _export_row(rel, meta) -> Dict[str, Any]:
     return {
         "path": str(rel),
@@ -826,91 +568,46 @@ def _export_row(rel, meta) -> Dict[str, Any]:
     }
 
 
+def _export_netscape(store: Store, filters: FilterSpec) -> None:
+    entries = []
+    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
+        if not passes_filters(rel, meta, filters):
+            continue
+        entries.append((str(rel), meta))
+    html_body = build_netscape_tree(entries)
+    sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
+
+
+def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
+    if jsonl:
+        # Stream NDJSON one row at a time; output is unsorted.
+        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
+            if not passes_filters(rel, meta, filters):
+                continue
+            sys.stdout.write(json.dumps(_export_row(rel, meta), ensure_ascii=False) + "\n")
+        return
+    rows = []
+    for _, rel, meta, _ in _iter_entries(store, meta_only=True):
+        if not passes_filters(rel, meta, filters):
+            continue
+        rows.append(_export_row(rel, meta))
+    rows.sort(key=lambda r: r["path"])
+    print(json.dumps(rows, ensure_ascii=False))
+
+
 def cmd_export(args) -> None:
     """Export bookmarks."""
     store = _store_from_args(args)
-    tag, host, path, since_dt = _resolve_filter_args(args)
+    filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":
-        entries = []
-        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-            if not _passes_filters(rel, meta, tag, host, path, since_dt):
-                continue
-            entries.append((str(rel), meta))
-        html_body = _build_netscape_tree(entries)
-        sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
+        _export_netscape(store, filters)
     elif args.fmt == "json":
-        if getattr(args, "jsonl", False):
-            # Stream NDJSON one row at a time; output is unsorted.
-            for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-                if not _passes_filters(rel, meta, tag, host, path, since_dt):
-                    continue
-                sys.stdout.write(json.dumps(_export_row(rel, meta), ensure_ascii=False) + "\n")
-            return
-        rows = []
-        for _, rel, meta, _ in _iter_entries(store, meta_only=True):
-            if not _passes_filters(rel, meta, tag, host, path, since_dt):
-                continue
-            rows.append(_export_row(rel, meta))
-        rows.sort(key=lambda r: r["path"])
-        print(json.dumps(rows, ensure_ascii=False))
+        jsonl = vars(args).get("jsonl", False)
+        if not isinstance(jsonl, bool):
+            raise TypeError("--jsonl must be a boolean")
+        _export_json(store, filters, jsonl)
     else:
         die("unknown export format")
-
-
-def _parse_netscape_html(text: str) -> List[Tuple[str, Dict[str, Any]]]:
-    """Parse Netscape HTML and return list of (path, meta) for bookmarks."""
-    # Parse the HTML to extract bookmarks with their folder paths
-    entries = []
-    folder_stack = []  # list of folder names
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        # FOLDER START: <DT><H3 ...>Name</H3>
-        m = _RE_NETSCAPE_FOLDER.search(line)
-        if m:
-            folder_name = html.unescape(m.group(1))
-            folder_stack.append(folder_name)
-            i += 1
-            continue
-        # BOOKMARK: <DT><A ... HREF="...">Title</A>
-        m = _RE_NETSCAPE_BOOKMARK.search(line)
-        if m:
-            url = html.unescape(m.group(1))
-            title_html = m.group(2)
-            title = html.unescape(_RE_HTML_TAG.sub("", title_html))
-            tagm = _RE_NETSCAPE_TAGS.search(line)
-            raw_tags = html.unescape(tagm.group(1)) if tagm else ""
-            tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
-            path = "/".join(folder_stack) if folder_stack else ""
-            meta = {
-                "url": url,
-                "title": title.strip(),
-                "tags": tags,
-                "created": iso_now(),  # (optional: parse ADD_DATE below)
-            }
-            # harvest ADD_DATE -> created
-            add_date = _RE_NETSCAPE_ADDDATE.search(line)
-            if add_date:
-                try:
-                    meta["created"] = datetime.fromtimestamp(
-                        int(add_date.group(1)), tz=timezone.utc
-                    ).isoformat()
-                except Exception:
-                    pass
-            entries.append((path, meta))
-            i += 1
-            continue
-
-        # FOLDER END: </DL> or </DL><p>
-        if _RE_NETSCAPE_DLEND.match(line):
-            if folder_stack:
-                folder_stack.pop()
-            i += 1
-            continue
-
-        i += 1
-    return entries
 
 
 def cmd_import(args) -> None:
@@ -918,7 +615,7 @@ def cmd_import(args) -> None:
     store = _store_from_args(args)
     store.create()
     text = Path(args.file).read_text(encoding="utf-8", errors="replace")
-    entries = _parse_netscape_html(text)
+    entries = parse_netscape_html(text, default_created=iso_now())
     skipped_scheme = 0
     skipped_unsafe = 0
     written = 0

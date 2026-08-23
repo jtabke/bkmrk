@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from bm.commands import (
+from bm.commands import _export_row, _filter_spec_from_args
+from bm.dedupe import _entry_score
+from bm.query import (
+    FilterSpec,
     _build_row,
     _build_search_blob,
-    _entry_score,
-    _export_row,
     _make_search_predicate,
     _matches_host,
     _matches_path,
     _matches_since,
     _matches_tag,
     _normalize_path_arg,
-    _passes_filters,
-    _resolve_filter_args,
+    passes_filters,
 )
 
 
@@ -122,42 +122,38 @@ class TestNormalizePathArg:
     def test_strips_slashes(self):
         assert _normalize_path_arg("/dev/python/") == "dev/python"
 
-    def test_non_string_returns_empty(self):
-        assert _normalize_path_arg(None) == ""
-        assert _normalize_path_arg(123) == ""
-        assert _normalize_path_arg(object()) == ""
-
     def test_empty_string_returns_empty(self):
         assert _normalize_path_arg("") == ""
 
+    def test_command_adapter_rejects_non_string_filter_values(self):
+        import argparse
 
-class TestResolveFilterArgs:
+        args = argparse.Namespace(tag=object(), host="", path="", since="")
+        with pytest.raises(TypeError):
+            _filter_spec_from_args(args)
+
+
+class TestFilterSpec:
+    def test_is_immutable(self):
+        from dataclasses import FrozenInstanceError
+
+        spec = FilterSpec()
+        with pytest.raises(FrozenInstanceError):
+            spec.host = "example.com"
+
     def test_string_path_honored(self):
         import argparse
 
         ns = argparse.Namespace(tag="dev", host="EXAMPLE.com", path="/foo/", since=None)
-        tag, host, path, since = _resolve_filter_args(ns)
-        assert tag == "dev"
-        assert host == "example.com"
-        assert path == "foo"
-        assert since is None
-
-    def test_non_string_collapses_to_neutral(self):
-        import argparse
-
-        ns = argparse.Namespace(tag=object(), host=42, path=None, since=object())
-        tag, host, path, since = _resolve_filter_args(ns)
-        assert tag is None
-        assert host == ""
-        assert path == ""
-        assert since is None
+        spec = _filter_spec_from_args(ns)
+        assert spec == FilterSpec(tag="dev", host="example.com", path="foo", since=None)
 
     def test_empty_string_tag_is_none(self):
         import argparse
 
         ns = argparse.Namespace(tag="", host=None, path=None, since=None)
-        tag, *_ = _resolve_filter_args(ns)
-        assert tag is None
+        spec = _filter_spec_from_args(ns)
+        assert spec.tag is None
 
 
 class TestPassesFilters:
@@ -165,13 +161,13 @@ class TestPassesFilters:
         rel = Path("dev/python/foo")
         meta = {"url": "https://example.com", "tags": ["lang"], "created": "2024-06-01"}
         cutoff = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        assert _passes_filters(rel, meta, "lang", "example.com", "dev", cutoff) is True
+        assert passes_filters(rel, meta, FilterSpec("lang", "example.com", "dev", cutoff)) is True
         # Wrong tag — fails
-        assert _passes_filters(rel, meta, "other", "example.com", "dev", cutoff) is False
+        assert passes_filters(rel, meta, FilterSpec("other", "example.com", "dev", cutoff)) is False
         # Wrong host — fails
-        assert _passes_filters(rel, meta, "lang", "wrong.com", "dev", cutoff) is False
+        assert passes_filters(rel, meta, FilterSpec("lang", "wrong.com", "dev", cutoff)) is False
         # Wrong path — fails
-        assert _passes_filters(rel, meta, "lang", "example.com", "news", cutoff) is False
+        assert passes_filters(rel, meta, FilterSpec("lang", "example.com", "news", cutoff)) is False
 
 
 class TestBuildRowAndExport:
@@ -287,6 +283,8 @@ class TestMakeSearchPredicate:
         assert pred("python rocks") is True
         assert pred("learn python") is False
 
-    def test_invalid_regex_dies(self):
-        with pytest.raises(SystemExit):
+    def test_invalid_regex_raises_parser_error(self):
+        import re
+
+        with pytest.raises(re.error):
             _make_search_predicate("(unbalanced", use_regex=True)

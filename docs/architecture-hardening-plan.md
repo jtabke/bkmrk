@@ -106,7 +106,7 @@ signal rather than as a transaction guarantee.
 2. Remove `MagicMock`-specific argument accommodation from production filtering.
 3. Move pure list/search/filter/result-row logic to `query.py`.
 4. Move Netscape parsing/rendering to `netscape.py`.
-5. Move dedupe merge decisions to `dedupe.py` if the store extraction leaves a cohesive pure seam; otherwise retain it until a later change.
+5. Move the cohesive dedupe selection and merge decisions to `dedupe.py`; keep filesystem scanning and mutation orchestration in `commands.py`.
 6. Keep `commands.py` as thin orchestration adapters rather than merely redistributing unchanged command functions.
 7. Remove the unused `Bookmark` dataclass unless it becomes a real canonical type while preserving unknown metadata.
 
@@ -116,6 +116,7 @@ signal rather than as a transaction guarantee.
 - Query functions accept explicit typed values rather than arbitrary argparse-like objects.
 - Pure query/interchange behavior remains independently testable.
 - No generic service layer or catch-all replacement module is introduced.
+- Dedupe's pure selection/merge rules are independently housed in `dedupe.py`; command-level scan/write/delete orchestration remains in `commands.py`.
 
 ## Group 5 — CLI contracts and documentation
 
