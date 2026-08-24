@@ -2,18 +2,44 @@
 
 [![Tests][tests-badge]][tests-workflow]
 
-A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `pass`:
+**Portable, file-based bookmarks for the command line.**
 
-- **One text file per bookmark** (`.bm`) with front matter + freeform notes
-- **Human‑readable auto-generated paths** with a short hash to avoid collisions
-- **Stable IDs** derived from the URL (rename‑safe)
-- **Greppable** store; composable CLI
-- **Atomic writes** & path‑safety checks
-- **JSON / JSONL** output for pipelines
-- **Netscape HTML import/export** for browser interoperability
-- **Optional Git sync** for history and cross‑device
+Each bookmark is a readable `.bm` file containing metadata and freeform notes.
 
-> Works on macOS, Linux, WSL, and Windows (PowerShell). No third‑party dependencies.
+```console
+$ bm init
+Initialized store at: /home/alex/.bookmarks.d
+
+$ bm add https://github.com/jtabke/bkmrk \
+    --name "bkmrk on GitHub" \
+    --tags cli,bookmarks,python \
+    --description "Source and documentation for bm." \
+    --id tools/bkmrk
+f58e60347098
+
+$ bm search "source documentation"
+f58e60347098  tools/bkmrk — bkmrk on GitHub <https://github.com/jtabke/bkmrk>
+```
+
+The bookmark is just a file:
+
+```text
+~/.bookmarks.d/tools/bkmrk.bm
+
+---
+url: https://github.com/jtabke/bkmrk
+title: bkmrk on GitHub
+tags: [cli, bookmarks, python]
+created: 2025-09-16T08:42:00-07:00
+---
+Source and documentation for bm.
+```
+
+Files can be searched, edited, copied, versioned with Git, or synchronized using any
+filesystem tool.
+
+> Works on macOS, Linux, WSL, and Windows (PowerShell). The runtime has no
+> third-party dependencies.
 
 ---
 
