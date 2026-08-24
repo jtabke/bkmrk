@@ -5,7 +5,7 @@
 A tiny, **stdlib‑only** bookmark manager inspired by the Unix philosophy and `pass`:
 
 - **One text file per bookmark** (`.bm`) with front matter + freeform notes
-- **Human‑readable paths** with a short hash to avoid collisions
+- **Human‑readable auto-generated paths** with a short hash to avoid collisions
 - **Stable IDs** derived from the URL (rename‑safe)
 - **Greppable** store; composable CLI
 - **Atomic writes** & path‑safety checks
@@ -159,7 +159,7 @@ Default store directory is `~/.bookmarks.d` (override via `$BOOKMARKS_DIR`). Eac
   README.txt
 ```
 
-File names are **human readable** and end with a **short hash of the URL** to avoid collisions.
+Auto-generated file names are **human readable** and end with a **short hash of the URL** to avoid collisions. Explicit `--id` values and destinations supplied to `bm mv` are used instead and do not need to contain a hash.
 
 ### Bookmark file format
 
@@ -231,7 +231,7 @@ bm list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|
 
 ### `search`
 
-Default semantics: case‑insensitive substring **AND** across title, url, tags, and body. Each whitespace‑separated word in the query must appear somewhere; quote phrases at the shell level if you need a single token.
+Default semantics: case-insensitive substring **AND** across title, URL, tags, and body. The query is split on whitespace, and each term must appear somewhere in the combined fields. Because `<query>` is one positional argument, quote any multiword query so the shell passes it as one value. Use `--regex` when you need phrase or pattern matching.
 
 ```bash
 bm search <query> [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--regex] [--field FIELD] [--json|--jsonl]
@@ -247,8 +247,10 @@ Display metadata/notes or open the URL in your default browser:
 
 ```bash
 bm show <ID|path>
-bm open <ID|path>
+bm open <ID|path> [--allow-scheme]
 ```
+
+`open` accepts `http`, `https`, `ftp`, `ftps`, and `mailto` URLs by default. Use `--allow-scheme` only when you intend to pass another scheme to the operating system.
 
 ### `edit`, `rm`, `mv`
 
@@ -327,7 +329,7 @@ bm sync
 
 ## Filtering & output formats
 
-- `--host` matches the URL host (case‑insensitive, ignores leading `www.`)
+- `--host` matches the parsed URL authority exactly (case-insensitive, ignoring a leading `www.`). Include an explicit port when the saved URL has one.
 - `--path` filters by path prefix (e.g., `--path dev/python` shows only entries under that directory tree)
 - `--since` accepts `YYYY-MM-DD` or full ISO timestamps; comparisons are proper datetimes
 - `--json` emits a single JSON array; `--jsonl` outputs one JSON object per line (NDJSON)
@@ -341,13 +343,23 @@ Common JSON schema fields: `id`, `path`, `title`, `url`, `tags`, `created`, `mod
 **fzf launcher**
 
 ```bash
-bm list --jsonl | fzf --with-nth=2.. | awk '{print $1}' | xargs -r bm open
+choice="$(
+    bm list --jsonl |
+    jq -r '[.id, .title, .url] | @tsv' |
+    fzf --with-nth=2..
+)"
+if [ -n "$choice" ]; then
+    bm open "$(printf "%s" "$choice" | cut -f1)"
+fi
 ```
 
 **Open the latest saved from a host**
 
 ```bash
-bm list --host example.com --jsonl | head -1 | jq -r '.id' | xargs -r bm open
+id="$(bm list --host example.com --jsonl | head -1 | jq -r '.id')"
+if [ -n "$id" ]; then
+    bm open "$id"
+fi
 ```
 
 **Rofi launcher**
@@ -389,7 +401,11 @@ spaces.
 **Bulk tag HN links**
 
 ```bash
-bm list --host news.ycombinator.com --jsonl | jq -r '.id' | xargs -n1 bm tag add hn
+bm list --host news.ycombinator.com --jsonl |
+jq -r '.id' |
+while IFS= read -r id; do
+    [ -n "$id" ] && bm tag add "$id" hn
+done
 ```
 
 **List bookmarks in a specific category**
@@ -439,14 +455,14 @@ Run this script periodically or on demand to generate an up-to-date bookmark fil
 
 ## Configuration
 
-- **Store directory**: set `BOOKMARKS_DIR` or pass `--store` to any command
+- **Store directory**: set `BOOKMARKS_DIR`, or place the global option before the command: `bm --store PATH <command>`
 - **Editor**: `VISUAL` or `EDITOR` (supports commands like `code --wait`)
 - **Debug**: set `BM_DEBUG=1` to re-raise unexpected exceptions with a full traceback (otherwise printed as a one-line `bm: <Type>: <msg>` to stderr with exit code 2)
 - **Shell completion**: install the `completion` extra (`pip install 'bkmrk[completion]'`) for [argcomplete](https://github.com/kislyuk/argcomplete). Then enable global completion (`activate-global-python-argcomplete`) or wire it per‑shell with `eval "$(register-python-argcomplete bm)"`.
 
 Windows notes:
 
-- Paths avoid reserved names and use atomic replaces; long paths depend on OS settings
+- Atomic replacement and no-clobber operations use the corresponding Windows filesystem APIs. Reserved device names and long-path limits still follow Windows and filesystem rules; choose explicit IDs and paths accordingly.
 
 ---
 
@@ -456,7 +472,7 @@ Windows notes:
 - **Conflict-aware mutations**: read/modify/write operations compare byte snapshots and raise a conflict instead of overwriting changes observed before the final check; portable stdlib APIs cannot close the narrow external-writer check/replace race, and multi-file operations may retain safe partial progress before a later conflict, so this is not a transaction guarantee
 - **Crash durability**: files are flushed and fsynced before replacement; containing-directory fsync is best-effort because platform/filesystem support varies. Atomic visibility and crash durability are separate guarantees.
 - **No-clobber creation/moves**: no-force add/import publish a fully written temp file with an atomic hard link, and no-force moves use link-then-unlink. Existing destinations are never overwritten; a crash during creation can leave a harmless temporary hard-link name, while a crash during a move can leave both source and destination names. Both states are safe to reconcile on retry. Filesystems without hard-link support fail rather than falling back to replacement.
-- **Path safety**: `..` and absolute paths are rejected; files cannot escape the store
+- **Path safety**: `..`, absolute paths, and paths that resolve outside the store are rejected. As with the optimistic content checks above, portable path validation cannot eliminate every race against a malicious process that concurrently rewrites filesystem links.
 - **No network by default**: `bm` never fetches content (future hooks can)
 - **Git**: pushes only if an upstream is configured and Git commands are bounded/non-interactive
 
