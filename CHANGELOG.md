@@ -1,3 +1,18 @@
+## 0.3.1 (2026-08-23)
+
+### Fix
+
+- parse Netscape bookmarks structurally
+- tighten persistence and input contracts
+- bound external commands and escape exports
+- harden bookmark persistence invariants
+
+### Refactor
+
+- remove transitional command compatibility
+- split query and interchange concerns
+- centralize store operations and application errors
+
 ## 0.3.0 (2026-05-03)
 
 ### Feat
