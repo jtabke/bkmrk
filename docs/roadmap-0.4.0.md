@@ -113,11 +113,13 @@ repair has an unambiguous, independently tested safety contract.
 - [ ] Keep title fetching disabled unless the user requests it.
 - [ ] Detect an existing normalized URL during add and offer a clear non-destructive path.
 
-### 4. Browser capture — strategic 0.4.0 goal
+### 4. Browser capture and access — strategic 0.4.0 goal
 
 A browser integration is compelling because capture friction is the largest difference
-between `bm` and a built-in browser bookmark manager. The integration must not weaken the
-local-first model.
+between `bm` and a built-in browser bookmark manager. Retrieval should be equally direct:
+users should be able to search the live `bm` store and launch a result without leaving the
+browser. The `.bm` files remain the source of truth; do not mirror the collection into the
+browser's proprietary bookmark database or create two-way synchronization conflicts.
 
 #### Discovery and architecture checkpoint
 
@@ -125,26 +127,51 @@ local-first model.
 - [ ] Compare browser Native Messaging with an authenticated loopback HTTP bridge.
 - [ ] Evaluate setup complexity on Chromium, Firefox, Safari, macOS, Linux, and Windows.
 - [ ] Select one transport before implementation.
-- [ ] Define a small versioned capture message containing URL, title, optional tags, notes,
-  and destination path.
+- [ ] Define a small versioned request/response protocol for capture and read-only query
+  actions.
+- [ ] Capture messages contain URL, title, optional tags, notes, and destination path.
+- [ ] Search messages contain query text, explicit filters, and a bounded result limit.
 - [ ] Reject shell interpolation and validate all data at the existing CLI/store boundary.
-- [ ] Decide how the browser reports success, duplicates, validation failures, and an
-  unavailable local bridge.
+- [ ] Keep browser code away from direct filesystem access; `bm` remains the only writer.
+- [ ] Decide how the browser reports success, duplicates, validation failures, conflicts,
+  and an unavailable local bridge.
 
 **Preferred starting direction:** a Native Messaging host because it avoids an always-on
-HTTP service and lets the browser invoke a narrowly scoped local program. This remains a
-proposal until the cross-platform installation and security costs are tested.
+HTTP service and lets the browser invoke a narrowly scoped local program. Use one-shot
+messages for capture and a connection that lives only while the search UI is open for
+interactive queries. This remains a proposal until the cross-platform installation and
+security costs are tested.
 
 #### Minimum viable browser integration
 
+Capture:
+
 - [ ] Save the active tab's URL and title.
-- [ ] Allow optional tags and notes before saving.
-- [ ] Show success or a useful error in the browser.
+- [ ] Allow optional tags, destination path, and notes before saving.
+- [ ] Show success, an existing bookmark, or a useful error in the browser.
+- [ ] Preserve no-clobber behavior; never replace an existing bookmark silently.
+
+Search and launch:
+
+- [ ] Provide a popup command palette that searches title, URL, tags, and notes.
+- [ ] Show recent bookmarks when the query is empty.
+- [ ] Open the selected result in the current tab or a new tab.
+- [ ] Add a keyboard shortcut for the command palette.
+- [ ] Add an omnibox keyword such as `bm` for `Ctrl/Cmd+L → bm query → Enter`.
+- [ ] Debounce interactive queries and bound result counts.
+- [ ] Keep the native connection open only while the popup or search surface is active.
+- [ ] Return bookmark metadata to the extension and let browser APIs open the URL.
+
+Packaging and platform scope:
+
 - [ ] Never send bookmark data to a hosted service.
-- [ ] Package installation and removal instructions with the integration.
+- [ ] Request only minimal browser permissions such as `activeTab`, `nativeMessaging`, and
+  local extension storage.
+- [ ] Package installation, status, and removal commands with the integration.
 - [ ] Support at least one Chromium-based browser for the first working slice.
 - [ ] Determine whether Firefox support fits 0.4.0 after the transport is proven.
 - [ ] Treat Safari support as a separate decision because its extension packaging differs.
+- [ ] Treat a persistent side panel as a later enhancement, not an MVP requirement.
 
 ### 5. Safer deletion — should have
 
@@ -182,7 +209,8 @@ Each slice should be independently reviewed, validated, and committed.
 3. **Diagnostics:** implement read-only `doctor` and recovery documentation.
 4. **Daily use:** implement `pick` and bounded capture helpers.
 5. **Browser discovery:** threat model and transport prototype.
-6. **Browser MVP:** ship one supported browser path only after the prototype is reviewed.
+6. **Browser MVP:** ship capture plus search/launch for one supported browser only after
+   the prototype is reviewed.
 7. **Deletion safety:** implement trash/restore if the compatibility decision is approved.
 8. **Adoption docs:** migration guides, demo, comparison, and contributor setup.
 9. **Release:** full cross-platform validation, package build, changelog, tag, and publish.
@@ -198,6 +226,8 @@ Version 0.4.0 is ready when:
 - [ ] `bm doctor` can characterize a damaged or interrupted store without modifying it.
 - [ ] Network access remains opt-in and bounded.
 - [ ] Any browser bridge has a reviewed threat model and no hosted data path.
+- [ ] Browser capture and search both use the live `bm` store without mirroring it into the
+  browser bookmark database.
 - [ ] Automated tests pass on the supported Python and operating-system matrix.
 - [ ] Ruff, formatting, compile, package build, and package metadata checks pass.
 - [ ] The README and command help match actual output and exit behavior.
@@ -224,6 +254,8 @@ Track decisions here before implementation changes public behavior.
 | Initial `doctor` mutation authority | Decided | Read-only |
 | Browser transport | Open | Prototype Native Messaging first |
 | First supported browser | Open | One Chromium-based browser |
+| Initial browser search UI | Open | Popup command palette plus omnibox keyword |
+| Browser bookmark mirroring | Rejected | Keep `.bm` files as the only source of truth |
 | Optional title fetching | Open | Explicit flag, bounded and off by default |
 | `rm` versus trash behavior | Open | Preserve `rm` until compatibility is approved |
 | Homebrew distribution | Open | Include only if release ownership is clear |
@@ -234,3 +266,7 @@ Add dated entries when a slice starts, completes, changes scope, or records a de
 
 - **2026-08-23:** Created the 0.4.0 roadmap. Consolidated portability, diagnostics,
   daily-use, browser-capture, recovery, installation, and adoption work into a tracked plan.
+- **2026-08-23:** Expanded browser integration to cover both directions: capture the active
+  tab into `bm`, then search the live store and launch bookmarks through a popup command
+  palette, keyboard shortcut, or omnibox keyword. Rejected mirroring into the browser's
+  bookmark database.
