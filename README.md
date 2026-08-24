@@ -518,12 +518,12 @@ ruff format --check .
 python3 -m pytest -q
 ```
 
-### Roadmap / ideas
+### Roadmap
 
-- `bm reindex` + optional on‑disk index for very large stores
-- Markdown/CSV exports
-- Simple HTTP UI (`bm serve`) and browser extension hooks
-- Optional encryption (GPG or git‑crypt) for private notes
+The tracked [0.4.0 roadmap](docs/roadmap-0.4.0.md) focuses on lossless backup and
+restore, store diagnostics, easier daily capture, cross-platform packaging, and a secure
+browser integration. It also records open product and compatibility decisions before they
+change public behavior.
 
 ---
 
