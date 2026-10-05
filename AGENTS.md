@@ -1,33 +1,31 @@
-# Agent Guidelines for bm (Bookmark Manager)
+# Agent Guide for bkmrk (`bm`)
 
-## Build/Lint/Test Commands
+Plain-text bookmarks with a standard-library-only core and optional `argcomplete` completion. Python >=3.8; source is `src/bm/`, tests are `tests/`. Use [README](README.md) for CLI contracts and storage behavior; tooling/style configuration lives in `pyproject.toml` and `prek.toml`.
 
-- **Build**: `python3 -m compileall src`
-- **Lint**: `ruff check . && ruff format --check .`
-- **Format**: `ruff format .`
-- **Test all**: `pytest`
-- **Test single**: `pytest tests/test_file.py::TestClass::test_method`
-- **Pre-commit**: `prek run --all-files`
-- **Version bump**: `cz bump`
-- **Generate changelog**: `cz changelog`
-- **Release**: `cz bump --changelog && git push --tags`
+## Implementation and store safety
 
-## Code Style Guidelines
+- Use four spaces, double quotes, 100-character lines, sorted stdlib/third-party/local imports, type hints, snake_case functions/variables and PascalCase classes. Match existing docstrings; no bare `except`.
+- Change the existing owner and keep cohesive code together. Preserve stable bookmark IDs, output contracts, atomic writes, no-clobber creates, optimistic conflict checks, and path/symlink safeguards.
+- Use existing storage helpers; reject traversal, absolute bookmark paths, and escapes from the store. Atomic replacement uses same-directory temporary files and `os.replace()`; creates must not overwrite existing entries.
+- CLI tests and smoke checks must select a disposable store using `BOOKMARKS_DIR` or `bm --store <temporary-directory> <command>`. Never mutate the default `~/.bookmarks.d` or personal store for QA. Isolate Git remotes and browser/editor side effects too; do not invoke `bm sync` against a real remote as a routine check.
+- Preserve unrelated work and use one writer per checkout. New dependencies or changes to persisted format/public behavior need a demonstrated task requirement.
 
-- **Line length**: 100 characters
-- **Quotes**: Double quotes for strings
-- **Indentation**: Spaces (4 spaces)
-- **Imports**: stdlib → third-party → local, one per line
-- **Types**: Use type hints extensively (dataclasses, functions)
-- **Naming**: snake_case for functions/variables, PascalCase for classes
-- **Docstrings**: Triple-quoted for modules, classes, and functions
-- **Error handling**: Use exceptions appropriately, no bare except
-- **File structure**: One class/function per logical unit, clear separation
-- **Commit messages**: Use conventional commits format (feat, fix, docs, style, refactor, test, chore)
+## Proportional checks
 
-## Project Notes
+Run affected tests while iterating, for example `pytest tests/test_file.py::TestClass::test_method`. Run `ruff check <affected-files>` and `ruff format --check <affected-files>` for Python changes. Broader storage, shared CLI/output contracts, dependencies or test configuration need the relevant full tests and lint. Documentation-only edits need links, command accuracy, and whitespace checks; no application suite is required manually.
 
-- **Dependencies**: Stdlib-only (no third-party runtime deps)
-- **Python version**: >=3.8
-- **Atomic writes**: Use `os.replace()` for file modifications
-- **Path safety**: Reject `..` and absolute paths in user input
+Commands:
+
+- Syntax compilation: `python3 -m compileall src` (not package generation).
+- Full tests: `pytest`.
+- Full lint/format check: `ruff check .` and `ruff format --check .`.
+- Scoped formatting: `ruff format <intended-files>`.
+- Explicit full hook audit: `prek run --all-files`; do not make it the default for every edit. The installed commit hook currently runs pytest unconditionally, including documentation commits.
+
+Review the final intended diff and report checks, untested cases, and residual risks. Do not weaken safeguards or assertions to clear a gate.
+
+## Git and release
+
+Use Conventional Commits. An authorized commit includes only intended files after checks; preserve unrelated staged/unstaged/untracked work. Push only when authorized.
+
+Version bumps, changelog generation, tags, and releases are separate actions requiring explicit release authority. `cz bump` updates the version and configured changelog; `cz changelog` generates a changelog. Do not run these for an ordinary fix/docs commit. A request to push a documentation commit does not authorize version bumps or `git push --tags`.
