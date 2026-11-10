@@ -1,10 +1,13 @@
 """Unit tests for bm.cli module."""
 
-from unittest.mock import patch
+import errno
+import os
+import sys
+from unittest.mock import Mock, patch
 
 import pytest
 
-from bm.cli import main
+from bm.cli import _stdout_is_windows_pipe, _WindowsPipeWriter, main
 from bm.errors import AmbiguousEntryError, NotFoundError, UnsafePathError
 
 
@@ -98,6 +101,68 @@ class TestMain:
         ):
             with pytest.raises(RuntimeError):
                 main()
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+@pytest.mark.parametrize("error_number", [errno.EINVAL, errno.EIO, errno.EBADF])
+def test_windows_pipe_writer_only_translates_einval(operation, error_number):
+    stream = Mock()
+    getattr(stream, operation).side_effect = OSError(error_number, "write failed")
+    writer = _WindowsPipeWriter(stream)
+    expected = BrokenPipeError if error_number == errno.EINVAL else OSError
+
+    with pytest.raises(expected) as exc_info:
+        if operation == "write":
+            writer.write("example")
+        else:
+            writer.flush()
+    assert exc_info.value.errno == (errno.EPIPE if error_number == errno.EINVAL else error_number)
+    assert writer.encoding is stream.encoding
+
+
+def test_windows_pipe_detection_requires_a_pipe(tmp_path):
+    read_fd, write_fd = os.pipe()
+    try:
+        with patch.object(sys, "platform", "win32"):
+            with patch.object(sys, "stdout", Mock(fileno=lambda: write_fd)):
+                assert _stdout_is_windows_pipe()
+            with (tmp_path / "output.txt").open("w") as output:
+                with patch.object(sys, "stdout", output):
+                    assert not _stdout_is_windows_pipe()
+            with patch.object(sys, "stdout", Mock(fileno=Mock(side_effect=ValueError))):
+                assert not _stdout_is_windows_pipe()
+        with patch.object(sys, "platform", "linux"):
+            with patch.object(sys, "stdout", Mock(fileno=lambda: write_fd)):
+                assert not _stdout_is_windows_pipe()
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_windows_pipe_einval_is_quiet_and_restores_stdout(capsys):
+    stream = Mock()
+    stream.write.side_effect = OSError(errno.EINVAL, "invalid argument")
+    stream.flush.side_effect = OSError(errno.EINVAL, "invalid argument")
+    stream.fileno.return_value = 1
+
+    def output(_args):
+        print("example")
+
+    with patch("bm.cli._stdout_is_windows_pipe", return_value=True):
+        with patch("bm.cli.cmd_list", side_effect=output):
+            with patch("bm.cli.os.dup2") as dup2, patch.object(sys, "stdout", stream):
+                assert main(["--store", "unused-store", "list"]) == 0
+                assert sys.stdout is stream
+                dup2.assert_called_once()
+    assert capsys.readouterr().err == ""
+
+
+def test_windows_pipe_adapter_does_not_hide_command_io_errors(capsys):
+    error = OSError(errno.EINVAL, "storage failure")
+    with patch("bm.cli._stdout_is_windows_pipe", return_value=True):
+        with patch("bm.cli.cmd_list", side_effect=error):
+            assert main(["--store", "unused-store", "list"]) == 2
+    assert "storage failure" in capsys.readouterr().err
 
 
 def test_module_entry_point_runs():
