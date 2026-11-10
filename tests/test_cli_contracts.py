@@ -160,3 +160,17 @@ def test_real_cli_maps_git_failure(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Initialized store at:" in captured.out
     assert "git command failed" in captured.err
+
+
+def test_real_cli_import_missing_file_keeps_not_found_contract(tmp_path, capsys):
+    """A missing import file keeps the CLI's clean not-found contract."""
+    store = tmp_path / "store"
+    assert _run(store, "init") == 0
+    capsys.readouterr()
+
+    missing = tmp_path / "nope.html"
+    assert _run(store, "import", str(missing)) == 1
+    captured = capsys.readouterr()
+    assert "import file not found" in captured.err
+    assert "FileNotFoundError" not in captured.err
+    assert "Traceback" not in captured.err

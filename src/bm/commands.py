@@ -586,7 +586,10 @@ def cmd_import(args) -> None:
     """Import bookmarks from Netscape HTML."""
     store = _store_from_args(args)
     store.create()
-    text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+    try:
+        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError as exc:
+        raise NotFoundError(f"import file not found: {args.file}") from exc
     entries = parse_netscape_html(text, default_created=iso_now())
     skipped_scheme = 0
     skipped_unsafe = 0
