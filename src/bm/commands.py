@@ -598,7 +598,8 @@ def cmd_import(args) -> None:
         full_path = f"{path}/{slug}" if path else slug
         try:
             fpath = store.path_for(full_path)
-        except UnsafePathError:
+        except UnsafePathError as exc:
+            print(f"bm: skipped import path {full_path!r}: {exc}", file=sys.stderr)
             skipped_unsafe += 1
             continue
         if fpath.exists() and not args.force:
