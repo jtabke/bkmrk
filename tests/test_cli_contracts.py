@@ -171,6 +171,5 @@ def test_real_cli_import_missing_file_keeps_not_found_contract(tmp_path, capsys)
     missing = tmp_path / "nope.html"
     assert _run(store, "import", str(missing)) == 1
     captured = capsys.readouterr()
-    assert "import file not found" in captured.err
-    assert "FileNotFoundError" not in captured.err
-    assert "Traceback" not in captured.err
+    assert captured.err == f"bm: import file not found: {missing}\n"
+    assert captured.out == ""
