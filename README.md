@@ -488,6 +488,9 @@ Run this script periodically or on demand to generate an up-to-date bookmark fil
 
 Windows notes:
 
+- Bookmark paths accept `/` or `\\` separators on every platform. Commands and JSON/Netscape exports use `/` for consistent logical paths; store and import-file locations remain native filesystem paths.
+- Absolute, drive-qualified (including `C:relative`), and parent-traversal bookmark paths are rejected before normalization.
+- CI runs the full test suite on Windows with Python 3.12, alongside Linux with Python 3.8 and 3.12.
 - Atomic replacement and no-clobber operations use the corresponding Windows filesystem APIs. Reserved device names and long-path limits still follow Windows and filesystem rules; choose explicit IDs and paths accordingly.
 
 ---

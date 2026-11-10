@@ -2,6 +2,7 @@
 
 import argparse
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -1536,15 +1537,29 @@ created: 2023-01-17T10:00:00Z
         )
         assert dev_index < python_index < fastapi_index
 
-    def test_export_import_netscape_escapes_special_characters(self, tmp_path, capsys):
+    @pytest.mark.parametrize(
+        "folder",
+        [
+            "folder&'quoted'",
+            pytest.param(
+                'folder&<"quoted">',
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="Windows forbids <, > and double quotes in filenames",
+                ),
+            ),
+        ],
+    )
+    def test_export_import_netscape_escapes_special_characters(self, tmp_path, capsys, folder):
         """Netscape export/import preserves metadata and safely renders folder text."""
         import argparse
+        from html import escape
 
         from bm.io import build_text
 
         source = tmp_path / "source"
         target = tmp_path / "target"
-        source_folder = source / 'folder&<"quoted">'
+        source_folder = source / folder
         source_folder.mkdir(parents=True)
         target.mkdir()
         url = 'https://example.com/?q="quoted"&x=<tag>'
@@ -1571,7 +1586,7 @@ created: 2023-01-17T10:00:00Z
         exported = capsys.readouterr().out
         assert 'HREF="https://example.com/?q=&quot;quoted&quot;&amp;x=&lt;tag&gt;"' in exported
         assert 'TAGS="rock&amp;roll,&lt;angle&gt;,literal&amp;#34;"' in exported
-        assert "folder&amp;&lt;&quot;quoted&quot;&gt;" in exported
+        assert f"<H3>{escape(folder, quote=True)}</H3>" in exported
         assert "A &lt;title&gt; &amp; &quot;quoted&quot; with literal &amp;amp; text" in exported
 
         exported_file = tmp_path / "bookmarks.html"

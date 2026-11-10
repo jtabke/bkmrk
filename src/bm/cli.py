@@ -2,9 +2,12 @@
 
 # PYTHON_ARGCOMPLETE_OK
 import argparse
+import errno
 import os
+import stat
 import sys
-from typing import Optional, Sequence
+from contextlib import redirect_stdout
+from typing import Any, Optional, Sequence, TextIO
 
 from .commands import (
     cmd_add,
@@ -43,6 +46,42 @@ def _exit_code(value: object) -> int:
         return value
     print(value, file=sys.stderr)
     return 1
+
+
+class _WindowsPipeWriter:
+    """Translate Windows pipe EINVAL only at the stdout write/flush boundary."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+    def write(self, text: str) -> int:
+        try:
+            return self._stream.write(text)
+        except OSError as exc:
+            if exc.errno == errno.EINVAL:
+                raise BrokenPipeError(errno.EPIPE, "stdout pipe closed") from exc
+            raise
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except OSError as exc:
+            if exc.errno == errno.EINVAL:
+                raise BrokenPipeError(errno.EPIPE, "stdout pipe closed") from exc
+            raise
+
+
+def _stdout_is_windows_pipe() -> bool:
+    """Restrict EINVAL translation to a real Windows stdout pipe, not files."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return stat.S_ISFIFO(os.fstat(sys.stdout.fileno()).st_mode)
+    except (OSError, ValueError):
+        return False
 
 
 def _flush_stdout(status: int) -> int:
@@ -233,4 +272,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # statuses and output while making the function directly callable.
         return _exit_code(exc.code)
 
+    if _stdout_is_windows_pipe():
+        with redirect_stdout(_WindowsPipeWriter(sys.stdout)):
+            return _flush_stdout(_run_command(args))
     return _flush_stdout(_run_command(args))

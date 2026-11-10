@@ -24,8 +24,8 @@ SEARCH_FIELDS = ("title", "url", "tags", "body")
 
 
 def _normalize_path_arg(value: Optional[str]) -> str:
-    """Normalize an optional path filter by removing surrounding slashes."""
-    return value.strip("/") if value else ""
+    """Normalize separators and remove surrounding slashes from a path filter."""
+    return value.replace("\\", "/").strip("/") if value else ""
 
 
 def _matches_tag(rel: Path, meta: Dict[str, Any], tag: Optional[str]) -> bool:
@@ -55,7 +55,8 @@ def _matches_path(rel: Path, path_prefix: str) -> bool:
     path_prefix = _normalize_path_arg(path_prefix)
     if not path_prefix:
         return True
-    return str(rel).startswith(path_prefix + "/") or str(rel) == path_prefix
+    logical_path = rel.as_posix()
+    return logical_path.startswith(path_prefix + "/") or logical_path == path_prefix
 
 
 def passes_filters(rel: Path, meta: Dict[str, Any], filters: FilterSpec) -> bool:
@@ -73,7 +74,7 @@ def _build_row(rel: Path, meta: Dict[str, Any]) -> Dict[str, Any]:
     timestamp = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
     return {
         "id": rid(url),
-        "path": str(rel),
+        "path": rel.as_posix(),
         "title": meta.get("title", ""),
         "url": url,
         "tags": meta.get("tags", []),

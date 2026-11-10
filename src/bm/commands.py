@@ -21,7 +21,6 @@ from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, sear
 from .store import Store
 from .utils import (
     _launch_editor,
-    _reject_absolute_path,
     _reject_unsafe,
     create_slug_from_url,
     iso_now,
@@ -109,9 +108,8 @@ def cmd_add(args) -> None:
     url = args.url.strip()
     slug = args.id or create_slug_from_url(url)
     if args.path:
-        _reject_absolute_path(args.path)
-        _reject_absolute_path(slug)
-        slug = f"{normalize_slug(args.path)}/{normalize_slug(slug)}"
+        folder = normalize_slug(_reject_unsafe(args.path))
+        slug = f"{folder}/{normalize_slug(_reject_unsafe(slug))}"
     slug = _reject_unsafe(slug)
     fpath = store.path_for(slug)
     if fpath.exists() and not args.force:
@@ -172,7 +170,7 @@ def cmd_show(args) -> None:
     if not p:
         raise NotFoundError("not found")
     rel = p.relative_to(store.root).with_suffix("")
-    print(f"# {rel}")
+    print(f"# {rel.as_posix()}")
     meta, body = load_entry(p)
     for k in ["url", "title", "tags", "created", "modified"]:
         if k in meta and meta[k]:
@@ -217,7 +215,7 @@ def _filter_spec_from_args(args) -> FilterSpec:
 
     tag = text_value("tag") or None
     host = text_value("host").lower()
-    path = text_value("path").strip("/")
+    path = text_value("path").replace("\\", "/").strip("/")
     since_text = text_value("since")
     since = parse_iso(since_text) if since_text else None
     if since_text and since is None:
@@ -347,17 +345,14 @@ def cmd_mv(args) -> None:
     src = store.resolve(args.src)
     if not src:
         raise NotFoundError("source not found")
-    _reject_absolute_path(args.dst)
-    dst_slug = normalize_slug(args.dst)
-    dst_slug = _reject_unsafe(dst_slug)
-    dst = store.path_for(dst_slug)
+    dst = store.path_for(args.dst)
     try:
         store.move(src, dst, expected=store.snapshot(src), force=args.force)
     except FileExistsError as exc:
         raise BmError("destination exists (use --force)") from exc
     except OSError as exc:
         raise BmError(f"move failed: {exc}") from exc
-    print(dst.relative_to(store.root).with_suffix(""))
+    print(dst.relative_to(store.root).with_suffix("").as_posix())
 
 
 def cmd_tags(args) -> None:
@@ -448,8 +443,8 @@ def _process_duplicate_group(
     removed_entries = [entry for entry in group if entry is not survivor]
     action: Dict[str, Any] = {
         "canonical_url": canonical,
-        "kept": str(survivor["rel"]),
-        "removed": [str(entry["rel"]) for entry in removed_entries],
+        "kept": survivor["rel"].as_posix(),
+        "removed": [entry["rel"].as_posix() for entry in removed_entries],
         "tags": tags,
         "notes_appended": notes_appended,
         "total": len(group),
@@ -529,7 +524,7 @@ def cmd_tag(args) -> None:
 
 def _export_row(rel, meta) -> Dict[str, Any]:
     return {
-        "path": str(rel),
+        "path": rel.as_posix(),
         "url": meta.get("url", ""),
         "title": meta.get("title", ""),
         "tags": meta.get("tags", []),
@@ -543,7 +538,7 @@ def _export_netscape(store: Store, filters: FilterSpec) -> None:
     for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
         if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
-        entries.append((str(entry.relative_path), entry.meta))
+        entries.append((entry.relative_path.as_posix(), entry.meta))
     html_body = build_netscape_tree(entries)
     sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
 

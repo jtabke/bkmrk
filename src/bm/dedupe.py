@@ -14,7 +14,7 @@ def _entry_score(entry: Dict[str, Any]) -> Tuple[int, int, float, str]:
     if created_dt and created_dt.tzinfo is None:
         created_dt = created_dt.replace(tzinfo=timezone.utc)
     created_ts = created_dt.timestamp() if created_dt else float("inf")
-    return (-body_len, -title_len, created_ts, str(entry["rel"]))
+    return (-body_len, -title_len, created_ts, entry["rel"].as_posix())
 
 
 def _select_survivor(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -84,7 +84,7 @@ def _collect_body_parts(
         extra_body = entry["body"].rstrip()
         if extra_body:
             notes_appended = True
-            parts.append(f"[Merged from {entry['rel']}]\n{extra_body}".rstrip())
+            parts.append(f"[Merged from {entry['rel'].as_posix()}]\n{extra_body}".rstrip())
 
     return parts, notes_appended
 

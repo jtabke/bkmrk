@@ -77,6 +77,8 @@ def _reject_absolute_path(rel: str) -> None:
     """Reject POSIX and Windows absolute path syntax before normalization."""
     if rel.startswith(("/", "\\")) or ntpath.isabs(rel):
         raise UnsafePathError("absolute paths not allowed")
+    if ntpath.splitdrive(rel)[0]:
+        raise UnsafePathError("drive-qualified paths not allowed")
 
 
 def _reject_unsafe(rel: str) -> str:
@@ -90,6 +92,7 @@ def _reject_unsafe(rel: str) -> str:
     if "\x00" in rel:
         raise UnsafePathError("null byte in path not allowed")
     _reject_absolute_path(rel)
+    rel = rel.replace("\\", "/")
     parts = [p for p in rel.split("/") if p]
     for p in parts:
         if p and set(p) == {"."}:
@@ -111,8 +114,7 @@ def id_to_path(store: Path, slug: str) -> Path:
     # Validate the raw input first: normalize_slug intentionally strips
     # leading slashes for URL-derived slugs, but user paths must not be
     # silently reinterpreted as relative paths.
-    _reject_absolute_path(slug)
-    slug = normalize_slug(slug)
+    slug = normalize_slug(_reject_unsafe(slug))
     slug = _reject_unsafe(slug)
     fpath = store / (slug + FILE_EXT)
     if not is_relative_to(fpath, store):
