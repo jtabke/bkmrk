@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout repository (initial)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -31,18 +31,18 @@ jobs:
 
       - name: Checkout tag commit
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           ref: refs/tags/${{ steps.version.outputs.version }}
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
 
       - name: Create virtual environment
         run: uv venv
@@ -87,7 +87,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ steps.version.outputs.version }}
           files: dist/*
