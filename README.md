@@ -491,7 +491,10 @@ Windows notes:
 - Bookmark paths accept `/` or `\\` separators on every platform. Commands and JSON/Netscape exports use `/` for consistent logical paths; store and import-file locations remain native filesystem paths.
 - Absolute, drive-qualified (including `C:relative`), and parent-traversal bookmark paths are rejected before normalization.
 - CI runs the full test suite on Windows with Python 3.12, alongside Linux with Python 3.8 and 3.12.
-- Atomic replacement and no-clobber operations use the corresponding Windows filesystem APIs. Reserved device names and long-path limits still follow Windows and filesystem rules; choose explicit IDs and paths accordingly.
+- Normalized bookmark filenames are checked for reserved device names (such as `CON`, `NUL`, and `COM1`) and unsupported components on Windows. Invalid imported folder paths are reported and skipped; valid entries still import. Existing POSIX filenames and URL-derived bookmark IDs are unchanged.
+- The default Windows editor is Notepad. Set `VISUAL` or `EDITOR` to an executable and arguments, using Windows double quotes around paths with spaces. Use the editor's blocking mode (for example, `$env:EDITOR = 'code.cmd --wait'`) so editing finishes before `bm` saves the result. `VISUAL` takes precedence over `EDITOR`.
+- Windows `.cmd`/`.bat` editor launchers are supported with quoted arguments and shell expansion disabled. Arguments or paths containing double quotes, `%`, `!`, or line breaks are rejected for batch launchers; use a native `.exe` editor for those paths. Native editor launches do not use a shell.
+- Atomic replacement and no-clobber operations use the corresponding Windows filesystem APIs. Long-path limits and filesystem capabilities still apply.
 
 ---
 
