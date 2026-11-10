@@ -145,7 +145,7 @@ def test_module_entry_quietly_handles_downstream_pipe_close(tmp_path):
     stderr = process.stderr.read()
     returncode = process.wait(timeout=10)
 
-    assert returncode == 0
+    assert returncode == 0, stderr
     assert stderr == ""
 
 

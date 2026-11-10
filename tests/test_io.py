@@ -1,5 +1,7 @@
 """Unit tests for bm.io module."""
 
+from unittest.mock import Mock
+
 import pytest
 
 from bm.io import (
@@ -388,12 +390,45 @@ tags: ["tag,with,comma", normal]
         """Directory durability requests a separate fsync when supported."""
         import bm.io as io_mod
 
-        fsync_calls = []
-        monkeypatch.setattr(io_mod.os, "fsync", lambda fd: fsync_calls.append(fd))
+        open_directory = Mock(return_value=123)
+        fsync = Mock()
+        close = Mock()
+        monkeypatch.setattr(io_mod.os, "open", open_directory)
+        monkeypatch.setattr(io_mod.os, "fsync", fsync)
+        monkeypatch.setattr(io_mod.os, "close", close)
 
         io_mod._fsync_directory(tmp_path)
 
-        assert len(fsync_calls) == 1
+        open_directory.assert_called_once()
+        fsync.assert_called_once_with(123)
+        close.assert_called_once_with(123)
+
+    @pytest.mark.parametrize("operation", ["open", "fsync"])
+    def test_fsync_directory_tolerates_unsupported_operations(
+        self, tmp_path, monkeypatch, operation
+    ):
+        """Unsupported directory open/fsync is harmless; opened descriptors close."""
+        import bm.io as io_mod
+
+        open_directory = Mock(return_value=123)
+        fsync = Mock()
+        close = Mock()
+        if operation == "open":
+            open_directory.side_effect = OSError("directory open unsupported")
+        else:
+            fsync.side_effect = OSError("directory fsync unsupported")
+        monkeypatch.setattr(io_mod.os, "open", open_directory)
+        monkeypatch.setattr(io_mod.os, "fsync", fsync)
+        monkeypatch.setattr(io_mod.os, "close", close)
+
+        io_mod._fsync_directory(tmp_path)
+
+        if operation == "open":
+            fsync.assert_not_called()
+            close.assert_not_called()
+        else:
+            fsync.assert_called_once_with(123)
+            close.assert_called_once_with(123)
 
     def test_load_entry_meta_only_no_front_matter(self, tmp_path):
         """meta_only on a body-only file must still parse without error."""

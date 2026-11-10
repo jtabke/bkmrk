@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Generator, Optional, Union
 from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
 from .io import atomic_create, atomic_move_no_replace, atomic_write, load_entry, parse_front_matter
 from .models import FILE_EXT
-from .utils import _reject_absolute_path, _reject_unsafe, id_to_path, normalize_slug, rid
+from .utils import _reject_unsafe, id_to_path, normalize_slug, rid
 
 
 @dataclass
@@ -191,8 +191,7 @@ class Store:
     def resolve(self, token: str) -> Optional[Path]:
         """Resolve an ID or path token using the existing command priority."""
         token = token.strip()
-        _reject_absolute_path(token)
-        slug = normalize_slug(token)
+        slug = normalize_slug(_reject_unsafe(token))
         slug = _reject_unsafe(slug)
         exact = self.path_for(slug)
         if exact.exists():
@@ -211,7 +210,7 @@ class Store:
             return fuzzy[0]
         if len(fuzzy) > 1:
             listing = "\n  ".join(
-                str(path.relative_to(self.root).with_suffix("")) for path in sorted(fuzzy)
+                path.relative_to(self.root).with_suffix("").as_posix() for path in sorted(fuzzy)
             )
             raise AmbiguousEntryError(
                 f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}"
