@@ -83,15 +83,15 @@ repair has an unambiguous, independently tested safety contract.
 
 ### 2. Installation and first-run experience — must have
 
-- [ ] Add `bm --version`.
-- [ ] Improve the no-argument message with a short first-run workflow while preserving
+- [x] Add `bm --version` using installed package metadata.
+- [x] Improve the no-argument message with a short first-run workflow while preserving
   conventional help and error statuses.
-- [ ] Document `pipx install bkmrk` alongside `uv tool install bkmrk` and pip.
-- [ ] Verify and document shell completion setup.
-- [ ] Run CI on the supported Python range.
-- [ ] Run CI on Linux, macOS, and Windows.
-- [ ] Add a release check that builds the wheel and source distribution and runs
-  `twine check`.
+- [x] Document `pipx install bkmrk` alongside `uv tool install bkmrk` and pip.
+- [x] Verify and document Bash and Zsh completion setup.
+- [x] Configure CI at the supported Python endpoints (3.12 and 3.15).
+- [x] Configure CI on Linux, macOS, and Windows.
+- [x] Add package validation that builds the wheel and source distribution, runs
+  `twine check --strict`, and smoke-tests the installed wheel outside the checkout.
 - [ ] Decide whether a Homebrew formula belongs in 0.4.0 or a follow-up release.
 
 ### 3. Faster daily use — should have
