@@ -7,6 +7,7 @@ import os
 import stat
 import sys
 from contextlib import redirect_stdout
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional, Sequence, TextIO
 
 from .commands import (
@@ -131,7 +132,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     remain responsible for turning the returned status into process exit.
     """
 
-    ap = argparse.ArgumentParser(prog="bm", description="Plain-text, pass-style bookmarks")
+    first_steps = (
+        "Getting started:\n"
+        "  bm init\n"
+        '  bm add https://example.com --name "Example"\n'
+        "  bm search example\n"
+        "\nRun bm <command> --help for command details."
+    )
+    ap = argparse.ArgumentParser(
+        prog="bm",
+        description="Plain-text, pass-style bookmarks",
+        epilog=first_steps,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    try:
+        package_version = version("bkmrk")
+    except PackageNotFoundError:
+        package_version = "unknown (package not installed)"
+    ap.add_argument("--version", action="version", version=f"%(prog)s {package_version}")
     ap.add_argument(
         "--store",
         help="Path to bookmark store (default: $BOOKMARKS_DIR or ~/.bookmarks.d)",
@@ -270,6 +288,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SystemExit as exc:
         # argparse uses SystemExit for --help and usage errors. Preserve those
         # statuses and output while making the function directly callable.
+        if exc.code == 2 and not (sys.argv[1:] if argv is None else argv):
+            print(f"\n{first_steps}", file=sys.stderr)
         return _exit_code(exc.code)
 
     if _stdout_is_windows_pipe():

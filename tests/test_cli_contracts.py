@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from bm.cli import main
 
 
@@ -26,6 +28,57 @@ def test_main_accepts_argv_and_preserves_parser_statuses(capsys):
 
     assert main(["not-a-command"]) == 2
     assert "not-a-command" in capsys.readouterr().err
+
+
+def test_version_uses_package_metadata_without_creating_store(tmp_path, monkeypatch, capsys):
+    """Version is metadata-backed and does not require a command or store."""
+    store = tmp_path / "missing-store"
+    monkeypatch.setenv("BOOKMARKS_DIR", str(store))
+    with patch("bm.cli.version", return_value="1.2.3") as package_version:
+        assert main(["--version"]) == 0
+    package_version.assert_called_once_with("bkmrk")
+    captured = capsys.readouterr()
+    assert captured.out == "bm 1.2.3\n"
+    assert captured.err == ""
+    assert not store.exists()
+
+
+def test_source_checkout_without_metadata_still_supports_help_and_version(capsys):
+    """Running from source does not require installed distribution metadata."""
+    from importlib.metadata import PackageNotFoundError
+
+    with patch("bm.cli.version", side_effect=PackageNotFoundError("bkmrk")):
+        assert main(["--version"]) == 0
+        assert capsys.readouterr().out == "bm unknown (package not installed)\n"
+        assert main(["--help"]) == 0
+    assert "Getting started:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [[], None])
+def test_no_arguments_show_first_steps_and_keep_usage_error_status(
+    argv, tmp_path, monkeypatch, capsys
+):
+    """Both embedding and process argv preserve status 2 and avoid store writes."""
+    store = tmp_path / "missing-store"
+    monkeypatch.setenv("BOOKMARKS_DIR", str(store))
+    monkeypatch.setattr(sys, "argv", ["bm"])
+    assert main(argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "required" in captured.err
+    assert "Getting started:" in captured.err
+    assert "bm init" in captured.err
+    assert 'bm add https://example.com --name "Example"' in captured.err
+    assert "bm search example" in captured.err
+    assert not store.exists()
+
+
+def test_first_steps_do_not_obscure_other_parser_errors(capsys):
+    """Incomplete commands keep their focused argparse diagnostic."""
+    assert main(["add"]) == 2
+    captured = capsys.readouterr()
+    assert "url" in captured.err
+    assert "Getting started:" not in captured.err
 
 
 def test_real_cli_mutation_and_json_contracts(tmp_path, capsys):
