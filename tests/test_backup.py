@@ -1,5 +1,6 @@
 """Lossless backup CLI contracts and adversarial restore preflight."""
 
+import io
 import json
 from pathlib import Path
 
@@ -307,3 +308,55 @@ def test_json_extension_with_non_object_input_is_rejected(tmp_path):
     store = tmp_path / "store"
     assert run(store, "import", str(source)) == 1
     assert not store.exists()
+
+
+def test_stdin_backup_preview_and_restore_preserve_bytes(
+    tmp_path, monkeypatch, capsys, bookmark_factory
+):
+    original = tmp_path / "original"
+    target = bookmark_factory(original)
+    # Normalize native newlines first: write_text already emits CRLF on Windows.
+    content = target.read_bytes().replace(b"\r\n", b"\n")
+    target.write_bytes(content.replace(b"\n", b"\r\n") + b"\r\nNotes  \r\n")
+    assert b"\r\r\n" not in target.read_bytes()
+    assert run(original, "export") == 0
+    backup = capsys.readouterr().out.encode()
+    restored = tmp_path / "restored"
+    for flags in (("--dry-run",), ()):
+        stream = io.TextIOWrapper(io.BytesIO(backup), encoding="utf-8")
+        monkeypatch.setattr("sys.stdin", stream)
+        assert run(restored, "import", "-", *flags) == 0
+        if flags:
+            assert not restored.exists()
+        capsys.readouterr()
+    assert (restored / "guide.bm").read_bytes() == target.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "raw", [b"", b"  \n", b"{bad", b"[]", b'{"format":"bm-backup", "entries":[], "version":2}']
+)
+def test_invalid_stdin_backup_does_not_create_store(tmp_path, monkeypatch, raw):
+    store = tmp_path / "store"
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
+    assert run(store, "import", "-") == 1
+    assert not store.exists()
+
+
+def test_finalized_restore_plan_is_immutable(tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    from bm.backup import apply_restore, plan_restore
+    from bm.urls import ALLOWED_URL_SCHEMES
+
+    store = Store(tmp_path / "store")
+    entries = [{"path": "entry.bm", "content": CONTENT}]
+    plan = plan_restore(store, entries, ALLOWED_URL_SCHEMES, force=False)
+    assert isinstance(plan.items, tuple)
+    assert isinstance(plan.conflicts, tuple)
+    with pytest.raises(FrozenInstanceError):
+        plan.unchanged = 99
+    with pytest.raises(FrozenInstanceError):
+        plan.items[0].content = b"replacement"
+    entries[0]["content"] = "changed after preflight"
+    apply_restore(store, plan)
+    assert (store.root / "entry.bm").read_bytes() == CONTENT.encode("utf-8")

@@ -273,3 +273,24 @@ url: http://example.com
         assert payload
         assert payload[0]["canonical_url"] == "example.com"
         assert payload[0]["dry_run"]
+
+
+def test_preview_collections_are_detached_from_execution_plan(tmp_path):
+    store = Store(tmp_path / "store")
+    store.create()
+    for name in ("first", "second"):
+        store.create_entry(
+            store.path_for(name),
+            build_text({"url": "https://example.com", "tags": ["original"]}, ""),
+        )
+    plan = plan_dedupe(store)
+    group = plan.groups[0]
+    preview = group.document(dry_run=True)
+    preview["tags"].append("preview-only")
+    preview["removed"].clear()
+    assert group.merged.meta["tags"] == ["original"]
+    assert len(group.document(dry_run=True)["removed"]) == 1
+    apply_dedupe(store, plan)
+    meta, _ = load_entry(group.survivor.path)
+    assert meta["tags"] == ["original"]
+    assert len(list(store.root.rglob("*.bm"))) == 1

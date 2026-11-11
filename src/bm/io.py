@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .errors import ConflictError
-from .models import FM_END, FM_START
+from .models import FM_END, FM_START, Metadata
 
 # Compatibility alias for callers that imported the old persistence exception.
 ConcurrentModificationError = ConflictError
@@ -87,7 +87,7 @@ def _unquote_tag(value: str) -> str:
     return value
 
 
-def _parse_no_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
+def _parse_no_front_matter(text: str) -> Tuple[Metadata, str]:
     lines = text.splitlines()
     meta = {}
     body = text
@@ -130,8 +130,8 @@ def _consume_block_scalar(lines: List[str], start: int) -> Tuple[str, int]:
     return "\n".join(block), i
 
 
-def _parse_header(header: str, diagnostics: Optional[List[str]] = None) -> Dict[str, Any]:
-    meta: Dict[str, Any] = {}
+def _parse_header(header: str, diagnostics: Optional[List[str]] = None) -> Metadata:
+    meta: Metadata = {}
     lines = header.splitlines()
     i = 0
     while i < len(lines):
@@ -184,7 +184,7 @@ def _split_front_matter(text: str) -> Optional[Tuple[str, str]]:
 
 def parse_front_matter(
     text: str, *, diagnostics: Optional[List[str]] = None
-) -> Tuple[Dict[str, Any], str]:
+) -> Tuple[Metadata, str]:
     """Parse front matter whose opening and closing markers occupy full lines."""
     parts = _split_front_matter(text)
     if parts is None:
@@ -257,7 +257,7 @@ def _read_meta_only(fpath: Path) -> str:
         return b"".join(lines).decode("utf-8", errors="replace")
 
 
-def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Dict[str, Any], str]:
+def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Metadata, str]:
     """Load meta and body from file. If meta_only, skip body parsing."""
     if meta_only:
         text = _read_meta_only(fpath)

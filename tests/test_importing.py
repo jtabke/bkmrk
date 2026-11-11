@@ -1,11 +1,22 @@
 """Command and workflow contracts for importing."""
 
 import argparse
+import io
+import json
+import os
 
+import pytest
+
+from bm.cli import main
 from bm.commands import (
     cmd_import,
 )
 from bm.io import load_entry
+from bm.utils import create_slug_from_url
+
+
+def run(store, *args):
+    return main(["--store", str(store), *args])
 
 
 class TestCmdImport:
@@ -435,3 +446,144 @@ title: Existing
         meta, _ = load_entry(dev_files[0])
         assert meta["url"] == "https://example.com"
         assert meta["title"] == "Test"
+
+
+def browser_input():
+    return (
+        '<DL><A HREF="https://example.com/existing">Existing</A>'
+        '<A HREF="https://example.com/new">New</A>'
+        '<A HREF="https://example.com/new">Repeated destination</A>'
+        '<A HREF="javascript:alert(1)">Unsafe</A>'
+        '<A HREF="https://[broken">Broken URL</A>'
+        "<A>No href</A></DL>"
+    )
+
+
+@pytest.mark.parametrize(
+    "force, summary",
+    [
+        (False, "Would add 1, replace 0, skip existing 2; invalid 3."),
+        (True, "Would add 1, replace 2, skip existing 0; invalid 3."),
+    ],
+)
+def test_browser_preview_has_action_counts(
+    tmp_path, monkeypatch, capsys, force, summary, bookmark_factory
+):
+    store = tmp_path / "store"
+    existing = bookmark_factory(store, create_slug_from_url("https://example.com/existing") + ".bm")
+    before = existing.read_bytes()
+    monkeypatch.setattr("sys.stdin", io.StringIO(browser_input()))
+    flags = ["--force"] if force else []
+    assert run(store, "import", "-", "--dry-run", *flags) == 0
+    captured = capsys.readouterr()
+    assert captured.out == summary + "\nNo files written.\n"
+    assert "skipped" in captured.err
+    assert existing.read_bytes() == before
+    assert list(store.iterdir()) == [existing]
+
+
+def test_browser_stdin_import_retains_success_output(tmp_path, monkeypatch, capsys):
+    store = tmp_path / "store"
+    monkeypatch.setattr("sys.stdin", io.StringIO(browser_input()))
+    assert run(store, "import", "-") == 0
+    captured = capsys.readouterr()
+    assert captured.out == "import ok\n"
+    assert len(list(store.glob("*.bm"))) == 2
+
+
+@pytest.mark.parametrize("kind", ["directory", "blocked_parent", "symlink", "symlink_parent"])
+@pytest.mark.parametrize("force", [False, True])
+def test_browser_preview_and_import_reject_blocked_destinations(
+    tmp_path, monkeypatch, capsys, kind, force
+):
+    store = tmp_path / "store"
+    store.mkdir()
+    url = "https://example.com/blocked"
+    slug = create_slug_from_url(url) + ".bm"
+    folder = ""
+    if kind == "directory":
+        (store / slug).mkdir()
+    elif kind == "blocked_parent":
+        (store / "blocked").write_bytes(b"keep parent")
+        folder = "blocked"
+    else:
+        target = store / "target"
+        if kind == "symlink_parent":
+            target.mkdir()
+            link = store / "blocked"
+            folder = "blocked"
+        else:
+            target.write_bytes(b"keep target")
+            link = store / slug
+        try:
+            link.symlink_to(target, target_is_directory=kind == "symlink_parent")
+        except OSError:
+            pytest.skip("symlinks unavailable")
+    html = f'<DL><A HREF="{url}">Blocked</A></DL>'
+    if folder:
+        html = f"<DL><H3>{folder}</H3>{html}</DL>"
+
+    def state():
+        return {
+            path.relative_to(store).as_posix(): (
+                os.readlink(path)
+                if path.is_symlink()
+                else path.read_bytes()
+                if path.is_file()
+                else None
+            )
+            for path in store.rglob("*")
+        }
+
+    before = state()
+    for flags in (["--dry-run"], []):
+        monkeypatch.setattr("sys.stdin", io.StringIO(html))
+        assert run(store, "import", "-", *flags, *(["--force"] if force else [])) == 0
+        captured = capsys.readouterr()
+        if flags:
+            assert captured.out == (
+                "Would add 0, replace 0, skip existing 0; invalid 1.\nNo files written.\n"
+            )
+        else:
+            assert captured.out == "import ok\n"
+        assert "unsafe folder paths" in captured.err
+        assert state() == before
+
+
+@pytest.mark.parametrize("kind", ["file_root", "blocked_ancestor", "dangling_root"])
+@pytest.mark.parametrize("backup", [False, True])
+def test_import_preview_rejects_blocked_store_roots(tmp_path, monkeypatch, capsys, kind, backup):
+    store = tmp_path / "store"
+    if kind == "file_root":
+        store.write_bytes(b"keep root")
+    elif kind == "blocked_ancestor":
+        store.write_bytes(b"keep ancestor")
+        store = store / "missing-child"
+    else:
+        try:
+            store.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+    text = (
+        json.dumps(
+            {
+                "format": "bm-backup",
+                "version": 1,
+                "entries": [{"path": "a.bm", "content": "---\nurl: https://example.com\n---\n"}],
+            }
+        )
+        if backup
+        else browser_input()
+    )
+    for flags in (["--dry-run"], []):
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+        assert run(store, "import", "-", *flags) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "store path is blocked" in captured.err
+    if kind == "file_root":
+        assert store.read_bytes() == b"keep root"
+    elif kind == "blocked_ancestor":
+        assert store.parent.read_bytes() == b"keep ancestor"
+    else:
+        assert store.is_symlink() and not (tmp_path / "missing-target").exists()

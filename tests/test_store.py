@@ -250,3 +250,64 @@ def test_dedupe_late_conflict_preserves_newer_file_and_reports_partial_progress(
     assert conflicted_path.read_text(encoding="utf-8") == "newer external content\n"
     remaining_redundant = [path for path in (first_redundant, late_conflict) if path.exists()]
     assert remaining_redundant == [conflicted_path]
+
+
+@pytest.mark.parametrize("collision", [False, True])
+def test_store_rejects_duplicate_ids_and_keeps_explicit_paths(tmp_path, monkeypatch, collision):
+    from bm.utils import rid
+
+    store = Store(tmp_path / "store")
+    token = rid("https://example.com")
+    if collision:
+        monkeypatch.setattr("bm.store.rid", lambda _: token)
+    for name in ("z/second", "a/first"):
+        url = f"https://example.com/{name}" if collision else "https://example.com"
+        _write_entry(store.path_for(name), url=url)
+    with pytest.raises(AmbiguousEntryError) as error:
+        store.resolve(token)
+    message = str(error.value)
+    assert "2 matches" in message
+    assert message.index("a/first") < message.index("z/second")
+    assert store.resolve("a/first") == store.path_for("a/first")
+    assert store.resolve("z/second") == store.path_for("z/second")
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_store_duplicate_ids_keep_existing_path_resolution_priority(tmp_path, exact):
+    from bm.utils import rid
+
+    store = Store(tmp_path / "store")
+    for name in ("first", "second"):
+        _write_entry(store.path_for(name))
+    token = rid("https://example.com")
+    preferred = store.path_for(token if exact else token + "-named")
+    _write_entry(preferred, url="https://different.example")
+    assert store.resolve(token) == preferred
+
+
+@pytest.mark.parametrize(
+    "command",
+    [["rm"], ["edit"], ["mv", "destination"], ["open"], ["open", "--copy"], ["copy"], ["show"]],
+)
+def test_ambiguous_id_cli_has_no_side_effects(store, write_bm, capsys, command):
+    from bm.cli import main
+    from bm.utils import rid
+
+    first = write_bm("first", url="https://example.com", body="First notes")
+    second = write_bm("second", url="https://example.com", body="Second notes")
+    original = {path: path.read_bytes() for path in (first, second)}
+    with (
+        patch("bm.commands.launch_editor") as editor,
+        patch("bm.commands.webbrowser.open") as browser,
+        patch("bm.commands.write_clipboard") as clipboard,
+    ):
+        assert (
+            main(["--store", str(store), command[0], rid("https://example.com"), *command[1:]]) == 1
+        )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "ambiguous" in output.err
+    editor.assert_not_called()
+    browser.assert_not_called()
+    clipboard.assert_not_called()
+    assert {path: path.read_bytes() for path in store.rglob("*.bm")} == original

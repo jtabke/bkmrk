@@ -4,9 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 from .io import build_text
+from .models import Metadata, metadata_tags, metadata_text
 from .store import Store, StoreEntry
 from .utils import iso_now, normalize_url_for_compare, parse_iso
 
@@ -14,8 +15,10 @@ from .utils import iso_now, normalize_url_for_compare, parse_iso
 def _entry_score(entry: StoreEntry) -> Tuple[int, int, float, str]:
     """Return the stable score used to choose a duplicate survivor."""
     body_len = len(entry.body.strip())
-    title_len = len(entry.meta.get("title", "").strip())
-    created_dt = parse_iso(entry.meta.get("created")) or parse_iso(entry.meta.get("modified"))
+    title_len = len(metadata_text(entry.meta, "title").strip())
+    created_dt = parse_iso(metadata_text(entry.meta, "created")) or parse_iso(
+        metadata_text(entry.meta, "modified")
+    )
     created_ts = created_dt.timestamp() if created_dt else float("inf")
     return (-body_len, -title_len, created_ts, entry.relative_path.as_posix())
 
@@ -48,15 +51,15 @@ def _collect_group_stats(
 
     for entry in entries:
         meta = entry.meta
-        tags_union.update(t.strip() for t in meta.get("tags", []) if t.strip())
+        tags_union.update(t.strip() for t in metadata_tags(meta) if t.strip())
         tags_union.update(seg for seg in entry.relative_path.parts[:-1] if seg)
 
-        title = meta.get("title", "").strip()
+        title = metadata_text(meta, "title").strip()
         if title:
             title_candidates.append(title)
 
-        earliest_created = _earliest_dt(earliest_created, parse_iso(meta.get("created")))
-        latest_modified = _latest_dt(latest_modified, parse_iso(meta.get("modified")))
+        earliest_created = _earliest_dt(earliest_created, parse_iso(metadata_text(meta, "created")))
+        latest_modified = _latest_dt(latest_modified, parse_iso(metadata_text(meta, "modified")))
 
     return tags_union, earliest_created, latest_modified, title_candidates
 
@@ -91,7 +94,7 @@ def _join_body_parts(parts: List[str]) -> str:
 class MergeResult:
     """Proposed content and provenance, separate from every input snapshot."""
 
-    meta: Dict[str, Any]
+    meta: Metadata
     body: str
     notes_appended: bool
     earliest_created: Optional[datetime]
@@ -103,7 +106,7 @@ def merge_entry_group(entries: List[StoreEntry], survivor: StoreEntry) -> MergeR
     merged_meta = dict(survivor.meta)
     tags_union, earliest_created, latest_modified, title_candidates = _collect_group_stats(entries)
 
-    if title_candidates and not merged_meta.get("title"):
+    if title_candidates and not metadata_text(merged_meta, "title"):
         title_candidates.sort(key=len, reverse=True)
         merged_meta["title"] = title_candidates[0]
 
@@ -139,7 +142,7 @@ class DuplicatePlan:
                 for entry in self.members
                 if entry is not self.survivor
             ],
-            "tags": self.merged.meta["tags"],
+            "tags": list(metadata_tags(self.merged.meta)),
             "notes_appended": self.merged.notes_appended,
             "total": len(self.members),
         }
@@ -170,7 +173,7 @@ def plan_dedupe(
     buckets: dict[str, list[StoreEntry]] = {}
     scanned = 0
     for entry in store.iter_entries(snapshot=True, on_error=on_error):
-        key = normalize_url_for_compare(entry.meta.get("url", "").strip())
+        key = normalize_url_for_compare(metadata_text(entry.meta, "url").strip())
         if not key:
             continue
         buckets.setdefault(key, []).append(entry)
@@ -200,7 +203,7 @@ def apply_dedupe(store: Store, plan: DedupePlan) -> None:
         for entry in group.members:
             store.verify(entry.path, _snapshot(entry))
         meta = dict(group.merged.meta)
-        if not meta.get("modified"):
+        if not metadata_text(meta, "modified"):
             meta["modified"] = iso_now()
         store.write(
             group.survivor.path,

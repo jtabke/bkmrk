@@ -1,5 +1,9 @@
 """Tests for the pure Netscape interchange boundary."""
 
+from itertools import permutations
+
+import pytest
+
 from bm.netscape import build_netscape_tree, parse_netscape_html
 
 
@@ -125,3 +129,21 @@ def test_parse_netscape_uses_default_created_without_add_date():
     )
 
     assert parsed[0][1]["created"] == "2024-01-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ["__bookmarks__/guide"],
+        ["root", "__bookmarks__/guide", "__bookmarks__/__bookmarks__/nested"],
+        ["outer/__bookmarks__/guide", "outer/sibling"],
+        ["bookmarks/guide", "children/guide"],
+    ],
+)
+def test_render_folder_names_cannot_collide_with_bookmark_storage(paths):
+    for order in permutations(paths):
+        entries = [(path, {"url": f"https://example.com/{path}", "tags": []}) for path in order]
+        parsed = parse_netscape_html(build_netscape_tree(entries))
+        assert sorted((folder, meta["url"]) for folder, meta in parsed) == sorted(
+            (path.rpartition("/")[0], meta["url"]) for path, meta in entries
+        )
