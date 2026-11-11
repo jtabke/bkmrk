@@ -69,15 +69,19 @@ No new top-level commands. See the [backup contract](backup-format.md).
 
 #### Store diagnostics
 
-- [ ] Add a read-only `bm doctor` command.
-- [ ] Report invalid or incomplete front matter.
-- [ ] Report missing or unsupported URLs.
-- [ ] Report duplicate stable IDs and normalized URLs separately.
-- [ ] Report temporary hard-link files and possible interrupted moves.
-- [ ] Report paths that cannot be resolved safely.
-- [ ] Report relevant Git repository problems without changing Git configuration.
-- [ ] Support human-readable and JSON output.
-- [ ] Document manual recovery steps.
+- [x] Add a read-only `bm doctor` command.
+- [x] Report invalid or incomplete front matter.
+- [x] Report missing or unsupported URLs.
+- [x] Report duplicate stable IDs and normalized URLs separately.
+- [x] Report temporary hard-link files and possible interrupted moves.
+- [x] Report paths that cannot be resolved safely.
+- [x] Report relevant Git repository problems without changing Git configuration.
+- [x] Support human-readable and JSON output.
+- [x] Document manual recovery steps.
+
+Implemented checks and their limits are documented in
+[store diagnostics and manual recovery](store-diagnostics.md). Git diagnostics cover
+local discovery/configuration, HEAD shape, and common locks, not a full integrity audit.
 
 Automated repair is not part of the first implementation. Add `--repair` only after each
 repair has an unambiguous, independently tested safety contract.
@@ -99,15 +103,15 @@ repair has an unambiguous, independently tested safety contract.
 
 #### Interactive selection
 
-- [ ] Design `bm pick` as an optional `fzf` integration rather than a runtime dependency.
-- [ ] Support existing filters such as tag, host, path, and since.
-- [ ] Open the selected bookmark by default, with an option to print its ID or URL.
-- [ ] Handle missing `fzf`, cancellation, and empty results cleanly.
-- [ ] Keep JSON/JSONL pipelines as the stable noninteractive interface.
+- [x] Design `bm pick` as an optional `fzf` integration rather than a runtime dependency.
+- [x] Support existing filters such as tag, host, path, and since.
+- [x] Open the selected bookmark by default, with an option to print its ID or URL.
+- [x] Handle missing `fzf`, cancellation, and empty results cleanly.
+- [x] Keep JSON/JSONL pipelines as the stable noninteractive interface.
 
 #### Capture helpers
 
-- [ ] Accept a URL from standard input when explicitly requested.
+- [x] Accept a URL from standard input when explicitly requested (`bm add -`).
 - [ ] Investigate portable clipboard input without adding a runtime dependency.
 - [ ] Add optional title fetching only if it has a bounded timeout, size limit, clear
   user agent, safe redirect policy, and deterministic failure behavior.

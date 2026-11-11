@@ -61,11 +61,13 @@ filesystem tool.
   - [`add`](#add)
   - [`list`](#list)
   - [`search`](#search)
+  - [`pick`](#pick)
   - [`show` and `open`](#show-and-open)
   - [`edit`, `rm`, `mv`](#edit-rm-mv)
   - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
   - [`dirs`](#dirs)
   - [`dedupe`](#dedupe)
+  - [`doctor`](#doctor)
   - [`export` and `import`](#export-and-import)
   - [`sync`](#sync)
 
@@ -230,6 +232,7 @@ The implementation keeps the filesystem backend concrete and separates responsib
 - `bm.query`: immutable filter values and list/search row logic
 - `bm.netscape`: Netscape HTML import/export conversion
 - `bm.backup`: versioned exact-content backups and restore preflight
+- `bm.doctor`: read-only bookmark health diagnostics
 - `bm.dedupe`: pure duplicate selection and merge rules
 
 Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.
@@ -239,6 +242,9 @@ Embedding code can call `bm.cli.main([...])` and inspect the returned status wit
 ## CLI usage
 
 Run `bm --help` or `bm <command> --help` for command details.
+`--store` works before or after the command (and after an export format); if repeated,
+the last value wins. For example, `bm --store ./bookmarks list` and
+`bm list --store ./bookmarks` select the same store.
 
 ### `init`
 
@@ -251,6 +257,14 @@ bm init --git
 ### `add`
 
 Add a bookmark. `--edit` opens your `$EDITOR` with a pre‑filled template.
+Use `-` explicitly to read one URL from stdin; empty input, multiple URLs/lines, and
+embedded whitespace are rejected without writing a bookmark.
+
+```bash
+printf '%s\n' 'https://example.com/docs' | bm add - --name "Docs" --tags dev
+```
+
+Stdin is never read unless requested. This does not fetch a title or access the clipboard.
 
 ```bash
 bm add <url> [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
@@ -268,15 +282,43 @@ bm list [--host HOST] [--since ISO|YYYY-MM-DD] [-t TAG] [--path PREFIX] [--json|
 
 ### `search`
 
-Default semantics: case-insensitive substring **AND** across title, URL, tags, and body. The query is split on whitespace, and each term must appear somewhere in the combined fields. Because `<query>` is one positional argument, quote any multiword query so the shell passes it as one value. Use `--regex` when you need phrase or pattern matching.
+Default semantics: case-insensitive substring **AND** across title, URL, tags, and body.
+The query is split on whitespace, and each term must appear somewhere in the combined
+fields. `bm search python async` and `bm search "python async"` are equivalent. Options can
+also appear between terms: `bm search python --tag dev async`. Unknown options remain
+errors; use `--` before literal terms starting with `-`. Use `--regex` for phrase or pattern matching, passing
+one pattern argument (quote it when it contains spaces).
 
 ```bash
-bm search <query> [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--regex] [--field FIELD] [--json|--jsonl]
+bm search <terms...> [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--regex] [--field FIELD] [--json|--jsonl]
 ```
 
 - `--regex` treats the query as a Python regex (case‑insensitive).
 - `--field {title,url,tags,body}` restricts the scope; repeat to search multiple fields.
 - Exits **0** when at least one match is printed, **1** when there are no matches (so `bm search foo && open …` works as expected).
+
+### `pick`
+
+Select a bookmark interactively using an optional system installation of `fzf`:
+
+```bash
+bm pick                                # Fuzzy-select and open in your browser
+bm pick --tag dev --host example.com
+bm pick --path dev/python --since 2025-01-01 --print url
+bm pick --print id                      # Print only the stable ID; do not open anything
+```
+
+Supports the same tag/host/path/since filters as `list`. The picker shows path, title,
+and URL, with control characters sanitized for display. The selection opens under the
+same URL-scheme safeguards as `bm open`; `--print id|url` never opens a browser.
+`fzf` is not a Python dependency. Missing `fzf` gives installation guidance (exit 2).
+No initial matches exit 1 without launching it; fzf no-match/cancel exits 1/130 quietly.
+Failures or invalid selections exit 2 without opening anything.
+
+Picker invocations ignore `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` so user-defined
+shell bindings/previews cannot run unexpectedly or change the selection protocol.
+No shell command is constructed from bookmark data. Existing JSON/JSONL pipelines remain
+the noninteractive interface. See `bm pick --help` for filters.
 
 ### `show` and `open`
 
@@ -344,6 +386,28 @@ URL normalization for duplicate detection:
 Auto-generated bookmark slugs use similar host/path parsing, but exclude userinfo so credentials
 are not written into filenames.
 
+### `doctor`
+
+Inspect the store without changing bookmarks or Git configuration:
+
+```bash
+bm doctor
+bm doctor --store ./bookmarks --json
+```
+
+Reports malformed/incomplete front matter, invalid UTF-8, missing/malformed/unsupported
+URLs, duplicate stable IDs and normalized URLs separately, unsafe or unreadable paths,
+temporary files and possible interrupted hard-link moves. Basic local Git checks cover
+repository discovery/configuration errors, HEAD shape, and common lock files. An unborn
+repository is valid; this is not a full Git object-integrity audit.
+
+Each finding includes a manual recovery hint. No automatic repair, network requests,
+browser/editor launches, or Git index refreshes occur. Exit status is **0** with no
+findings and **1** with any findings (including warnings or a missing store). JSON emits
+one report containing `store`, `checked`, `ok`, and `findings`; each finding has `code`,
+`severity`, `paths`, `message`, and `hint`. See [diagnostics and recovery](docs/store-diagnostics.md)
+for scope and recovery steps.
+
 ### `export` and `import`
 
 **Plain export is a complete, lossless bookmark backup.** Import recognizes backups and
@@ -357,8 +421,9 @@ bm import bookmarks.json               # Restore missing bookmarks; leave identi
 bm import bookmarks.json --force       # Also replace conflicting paths, never delete unrelated files
 ```
 
-`-o` / `--output` is for complete backups: omit the format and place the option after
-`export`. It refuses existing output files and publishes the completed backup atomically.
+`-o` / `--output` works with every format, before or after the format name:
+`bm export json -o metadata.json` or `bm export -o bookmarks.html netscape`.
+It refuses existing output files and publishes the completed export atomically.
 The output directory must already exist. Backups include every `.bm` file, preserving exact
 paths and UTF-8 content: URLs, titles, tags, timestamps, unknown metadata, comments, notes,
 and line endings. They do not include Git history/configuration, other store files, file
@@ -386,8 +451,29 @@ bm import bookmarks.html [-f] [--dry-run]
 ```
 
 `export json` / JSONL is a metadata-only pipeline format, **not a restorable backup**.
-Netscape import preserves folder hierarchies and retains its best-effort skip behavior;
-its dry-run reports how many bookmarks would be imported and any skipped invalid entries.
+Netscape import preserves folder hierarchies and retains its best-effort skip behavior.
+Its dry-run reports added/replaced/skipped-existing/invalid counts without changing files:
+
+```text
+Would add 42, replace 0, skip existing 8; invalid 2.
+No files written.
+```
+
+Invalid counts cover missing URL attributes, malformed URLs, unsupported schemes, and
+unsafe folder paths. Repeated destinations are counted as skipped-existing by default;
+with `--force`, later records replace earlier ones. Counts represent record actions, not
+unique files. Normal browser import still prints `import ok`.
+
+Use `-` to import a backup or browser HTML from stdin, including in dry-run mode:
+
+```bash
+bm export | bm --store ./restored import -
+cat bookmarks.html | bm import - --dry-run
+```
+
+Stdin backup detection uses the document's JSON object/array shape; invalid backup JSON
+is rejected before mutation. Input files retain extension-based JSON detection as well.
+Empty input is rejected. Standard input is never read implicitly.
 
 ### `sync`
 
@@ -414,15 +500,11 @@ Common JSON schema fields: `id`, `path`, `title`, `url`, `tags`, `created`, `mod
 
 **fzf launcher**
 
+With `fzf` installed, no wrapper or `jq` dependency is required:
+
 ```bash
-choice="$(
-    bm list --jsonl |
-    jq -r '[.id, .title, .url] | @tsv' |
-    fzf --with-nth=2..
-)"
-if [ -n "$choice" ]; then
-    bm open "$(printf "%s" "$choice" | cut -f1)"
-fi
+bm pick
+bm pick --tag dev --print url
 ```
 
 **Open the latest saved from a host**

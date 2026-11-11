@@ -140,7 +140,10 @@ def test_real_cli_maps_invalid_path_not_found_and_no_result(tmp_path, capsys):
     assert capsys.readouterr().err == "bm: absolute paths not allowed\n"
 
     assert _run(store, "show", "missing") == 1
-    assert capsys.readouterr().err == "bm: not found\n"
+    assert capsys.readouterr().err == (
+        "bm: bookmark not found: 'missing'; use 'bm search <terms>' or 'bm list' "
+        "to find an ID or path\n"
+    )
 
     assert _run(store, "search", "missing") == 1
     captured = capsys.readouterr()

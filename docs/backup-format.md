@@ -6,7 +6,13 @@
 bm export -o bookmarks.json
 bm import bookmarks.json --dry-run
 bm import bookmarks.json
+bm export | bm --store ./restored import -
 ```
+
+`import -` explicitly reads stdin as a backup or browser HTML; `--dry-run` works the same
+way without creating the destination store. Backup content is read as bytes so UTF-8 and
+line endings are preserved. Empty input is rejected. Ordinary filename imports never read
+stdin implicitly.
 
 Use `bm --store /path/to/store ...` to select a store explicitly. Plain `export` writes
 the same document to stdout, with no status text. `-o` publishes a completed file using
@@ -15,6 +21,8 @@ directory must exist. Shell redirection is controlled by the shell and can overw
 an existing file before `bm` runs; prefer `-o` for backups.
 
 `export netscape` and `export json` / `--jsonl` retain their existing formats and filters.
+They also support safe file output, for example `bm export json -o metadata.json` and
+`bm export netscape -o bookmarks.html`. `-o` works before or after the format name.
 They are interchange/pipeline exports, not lossless backups. Complete backups have no
 filter options and need no additional top-level commands.
 

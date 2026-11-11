@@ -213,7 +213,8 @@ class Store:
                 path.relative_to(self.root).with_suffix("").as_posix() for path in sorted(fuzzy)
             )
             raise AmbiguousEntryError(
-                f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}"
+                f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}\n"
+                "Use a complete path from the list above."
             )
 
         for entry in self.iter_entries(meta_only=True):

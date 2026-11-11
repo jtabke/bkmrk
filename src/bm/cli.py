@@ -14,6 +14,7 @@ from .commands import (
     cmd_add,
     cmd_dedupe,
     cmd_dirs,
+    cmd_doctor,
     cmd_edit,
     cmd_export,
     cmd_import,
@@ -21,6 +22,7 @@ from .commands import (
     cmd_list,
     cmd_mv,
     cmd_open,
+    cmd_pick,
     cmd_rm,
     cmd_search,
     cmd_show,
@@ -37,6 +39,43 @@ def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="Filter by URL host (exact, 'www.' ignored)")
     parser.add_argument("--since", help="ISO date/time or YYYY-MM-DD (lower bound)")
     parser.add_argument("--path", help="Filter by path prefix (e.g., dev/python)")
+
+
+def _add_command_options(
+    commands: Sequence[argparse.ArgumentParser], formats: Sequence[argparse.ArgumentParser]
+) -> None:
+    """Accept common options at nested levels without resetting parent values."""
+    for parser in [*commands, *formats]:
+        parser.add_argument("--store", default=argparse.SUPPRESS, help="Path to bookmark store")
+    for parser in formats:
+        parser.add_argument(
+            "-o",
+            "--output",
+            default=argparse.SUPPRESS,
+            help="Write to a new file (never overwrite)",
+        )
+
+
+def _parse_arguments(
+    parser: argparse.ArgumentParser, argv: Optional[Sequence[str]]
+) -> argparse.Namespace:
+    """Accept trailing positional search terms without swallowing unknown options.
+
+    Subparsers cannot use argparse's intermixed parser. Ordinary search is AND-based,
+    so appending positional terms left after options preserves its semantics. Regex
+    still requires one argument, and -- retains its literal-argument meaning.
+    """
+    args, extra = parser.parse_known_args(argv)
+    if not extra:
+        return args
+    if args.cmd != "search":
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    boundary = extra.index("--") if "--" in extra else len(extra)
+    if any(token.startswith("-") for token in extra[:boundary]):
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    args.query.extend(extra[:boundary])
+    args.query.extend(extra[boundary + 1 :])
+    return args
 
 
 def _exit_code(value: object) -> int:
@@ -161,7 +200,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.set_defaults(func=cmd_init)
 
     p = sp.add_parser("add", help="Add a bookmark")
-    p.add_argument("url")
+    p.add_argument("url", help="URL, or - to read exactly one URL from stdin")
     p.add_argument("-n", "--name", help="Title")
     p.add_argument("-t", "--tags", help="Comma-separated tags")
     p.add_argument("-d", "--description", help="Notes / description")
@@ -200,7 +239,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Exits 1 when no entries match."
         ),
     )
-    p.add_argument("query")
+    p.add_argument("query", nargs="+", help="Search terms (quote a --regex pattern)")
     _add_filter_flags(p)
     p.add_argument(
         "--regex",
@@ -217,6 +256,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output.add_argument("--json", action="store_true", help="Emit JSON array")
     output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func=cmd_search)
+
+    p = sp.add_parser("pick", help="Select a bookmark using optional fzf (opens by default)")
+    _add_filter_flags(p)
+    p.add_argument(
+        "--print",
+        dest="print_field",
+        choices=["id", "url"],
+        help="Print the selected ID or URL instead of opening a browser",
+    )
+    p.set_defaults(func=cmd_pick)
 
     p = sp.add_parser("edit", help="Edit with $EDITOR / $VISUAL")
     p.add_argument("id")
@@ -244,6 +293,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--json", action="store_true", help="Emit JSON summary")
     p.set_defaults(func=cmd_dedupe)
 
+    p = sp.add_parser("doctor", help="Check store health without changing files")
+    p.add_argument("--json", action="store_true", help="Emit a structured diagnostic report")
+    p.set_defaults(func=cmd_doctor)
+
     p = sp.add_parser("tag", help="Mutate tags without editing")
     p.add_argument("action", choices=["add", "rm"])
     p.add_argument("id")
@@ -255,11 +308,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Export a complete backup or browser/pipeline data",
         description=(
             "Export a complete lossless JSON backup by default. Write to stdout, or use "
-            "-o FILE to safely create a new file. Explicit netscape/json formats are "
+            "-o FILE to safely create a new file in any format. Explicit netscape/json formats are "
             "browser/pipeline exports, not complete backups."
         ),
     )
-    p.add_argument("-o", "--output", help="Write backup to a new file (never overwrite)")
+    p.add_argument("-o", "--output", help="Write to a new file (never overwrite)")
     p.set_defaults(func=cmd_export)
     spx = p.add_subparsers(dest="fmt")
     pe = spx.add_parser("netscape", help="Export as Netscape bookmarks HTML")
@@ -283,7 +336,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "alone, and stop on conflicting paths unless --force is given."
         ),
     )
-    p.add_argument("file")
+    p.add_argument("file", help="Backup/browser export file, or - to read stdin")
     p.add_argument(
         "-f", "--force", action="store_true", help="Replace matching paths, keep unrelated files"
     )
@@ -293,6 +346,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p = sp.add_parser("sync", help="git add/commit/push if repo")
     p.set_defaults(func=cmd_sync)
 
+    _add_command_options(list(sp.choices.values()), (pe, pj))
+
     try:
         # Optional shell completion (no hard dependency).
         try:
@@ -301,7 +356,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pass
         else:
             argcomplete.autocomplete(ap)
-        args = ap.parse_args(argv)
+        args = _parse_arguments(ap, argv)
     except KeyboardInterrupt:
         return 130
     except BrokenPipeError:

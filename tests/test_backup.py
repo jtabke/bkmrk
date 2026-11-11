@@ -237,7 +237,7 @@ def test_netscape_dry_run_does_not_create_store(tmp_path, capsys):
     store = tmp_path / "store"
     assert run(store, "import", str(source), "--dry-run") == 0
     assert not store.exists()
-    assert "Would import 1" in capsys.readouterr().out
+    assert "Would add 1, replace 0, skip existing 0; invalid 0." in capsys.readouterr().out
 
 
 def test_export_is_sorted_and_excludes_non_bookmark_files(tmp_path):
