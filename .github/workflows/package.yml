@@ -38,6 +38,7 @@ jobs:
           uv venv bkmrk-smoke
           uv pip install --python bkmrk-smoke/bin/python "$GITHUB_WORKSPACE"/dist/*.whl
           bkmrk-smoke/bin/bm --help
+          bkmrk-smoke/bin/bm --version
           bkmrk-smoke/bin/bm init
           bkmrk-smoke/bin/bm add https://example.com --id smoke
           bkmrk-smoke/bin/bm show smoke
