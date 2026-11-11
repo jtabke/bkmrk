@@ -22,6 +22,7 @@ class _NetscapeParser(HTMLParser):
     def __init__(self, default_created: Optional[str]) -> None:
         super().__init__(convert_charrefs=True)
         self.entries: List[Tuple[str, Dict[str, Any]]] = []
+        self.invalid_count = 0
         self.folder_stack: List[str] = []
         self.default_created = default_created
         self._folder_text: Optional[List[str]] = None
@@ -67,6 +68,7 @@ class _NetscapeParser(HTMLParser):
         self._bookmark = None
         url = bookmark["url"]
         if url is None:
+            self.invalid_count += 1
             return
 
         raw_tags = bookmark["tags"] or ""
@@ -133,8 +135,15 @@ def parse_netscape_html(
     ``HTMLParser`` handles compact/minified input, mixed-case markup, and
     entity decoding while remaining deliberately best-effort for malformed HTML.
     """
+    return parse_netscape_document(text, default_created=default_created)[0]
+
+
+def parse_netscape_document(
+    text: str, *, default_created: Optional[str] = None
+) -> Tuple[List[Tuple[str, Dict[str, Any]]], int]:
+    """Return parsed entries and the count of anchors missing an href attribute."""
     parser = _NetscapeParser(default_created)
     parser.feed(text)
     parser.close()
     parser.finish()
-    return parser.entries
+    return parser.entries, parser.invalid_count

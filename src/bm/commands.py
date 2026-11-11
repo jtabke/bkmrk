@@ -1,5 +1,6 @@
 """Command implementations for the bookmark manager."""
 
+import io
 import json
 import os
 import re
@@ -8,15 +9,18 @@ import sys
 import tempfile
 import textwrap
 import webbrowser
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
+from .backup import apply_restore, build_backup, plan_restore, read_backup
 from .dedupe import _merge_entry_group, _select_survivor
+from .doctor import DoctorReport, inspect_store
 from .errors import BmError, NotFoundError, UnsafePathError
-from .io import build_text, load_entry, parse_front_matter
+from .io import atomic_create, build_text, load_entry, parse_front_matter
 from .models import FILE_EXT, default_store
-from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_html
+from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_document
 from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, search_rows
 from .store import Store
 from .utils import (
@@ -101,11 +105,21 @@ def cmd_init(args) -> None:
             pass
 
 
+def _add_url(value: str) -> str:
+    """Read stdin only when explicitly requested, accepting one URL rather than a batch."""
+    if value.strip() != "-":
+        return value.strip()
+    url = sys.stdin.read().strip()
+    if not url or len(url.splitlines()) != 1 or any(char.isspace() for char in url):
+        raise BmError("stdin must contain exactly one non-empty URL, without whitespace")
+    return url
+
+
 def cmd_add(args) -> None:
     """Add a new bookmark."""
     store = _store_from_args(args)
     store.require_exists(f"store not found: {store.root}. Run `bm init` first.")
-    url = args.url.strip()
+    url = _add_url(args.url)
     slug = args.id or create_slug_from_url(url)
     if args.path:
         folder = normalize_slug(_reject_unsafe(args.path))
@@ -168,7 +182,10 @@ def cmd_show(args) -> None:
     store = _store_from_args(args)
     p = store.resolve(args.id)
     if not p:
-        raise NotFoundError("not found")
+        raise NotFoundError(
+            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
+            "to find an ID or path"
+        )
     rel = p.relative_to(store.root).with_suffix("")
     print(f"# {rel.as_posix()}")
     meta, body = load_entry(p)
@@ -187,13 +204,20 @@ def cmd_open(args) -> None:
     store = _store_from_args(args)
     p = store.resolve(args.id)
     if not p:
-        raise NotFoundError("not found")
+        raise NotFoundError(
+            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
+            "to find an ID or path"
+        )
     meta, _ = load_entry(p)
-    url = meta.get("url")
+    _open_url(meta.get("url", ""), allow_scheme=getattr(args, "allow_scheme", False))
+
+
+def _open_url(url: str, *, allow_scheme: bool = False) -> None:
+    """Share the safe browser-launch boundary with interactive selection."""
     if not url:
         raise BmError("no url in entry")
     scheme = (urlparse(url).scheme or "").lower()
-    if scheme not in ALLOWED_URL_SCHEMES and not getattr(args, "allow_scheme", False):
+    if scheme not in ALLOWED_URL_SCHEMES and not allow_scheme:
         raise BmError(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
     ok = webbrowser.open(url)
     print(url)
@@ -289,8 +313,15 @@ def cmd_search(args) -> None:
     fields = _search_fields_from_args(args)
     use_regex = _search_regex_from_args(args)
     filters = _filter_spec_from_args(args)
+    query = args.query
+    if isinstance(query, list):
+        if use_regex and len(query) != 1:
+            raise BmError(
+                "--regex requires one pattern; quote patterns containing spaces", exit_code=2
+            )
+        query = " ".join(query)
     try:
-        hits = search_rows(_search_entries(store, filters, fields), args.query, fields, use_regex)
+        hits = search_rows(_search_entries(store, filters, fields), query, fields, use_regex)
     except re.error as exc:
         raise BmError(f"invalid --regex pattern: {exc}", exit_code=2) from exc
 
@@ -299,12 +330,74 @@ def cmd_search(args) -> None:
         raise BmError(exit_code=1)
 
 
+def _pick_row(rows: List[dict]) -> dict:
+    """Exchange only sanitized display rows with fzf, never shell commands."""
+    choices = {}
+    for index, row in enumerate(rows):
+        display = "  ".join(str(row[key]) for key in ("path", "title", "url"))
+        display = "".join(
+            " " if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in display
+        )
+        choices[f"{index}\t{display}"] = row
+    env = os.environ.copy()
+    # Custom fzf bindings/previews can execute shell commands or change its output
+    # protocol. Keep this narrowly scoped picker independent of those settings.
+    env.pop("FZF_DEFAULT_OPTS", None)
+    env.pop("FZF_DEFAULT_OPTS_FILE", None)
+    try:
+        result = subprocess.run(
+            [
+                "fzf",
+                "--no-multi",
+                "--delimiter=\\t",
+                "--with-nth=2..",
+                "--prompt=bm> ",
+                "--no-preview",
+            ],
+            input="\n".join(choices) + "\n",
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise BmError("fzf is not installed; install fzf to use 'bm pick'", exit_code=2) from exc
+    except OSError as exc:
+        raise BmError(f"could not start fzf: {exc}", exit_code=2) from exc
+    if result.returncode in (1, 130):
+        raise BmError(exit_code=result.returncode)
+    if result.returncode:
+        raise BmError(f"fzf failed with exit status {result.returncode}", exit_code=2)
+    selection = result.stdout.rstrip("\r\n")
+    if selection not in choices:
+        raise BmError("fzf returned an invalid selection; no bookmark opened", exit_code=2)
+    return choices[selection]
+
+
+def cmd_pick(args) -> None:
+    """Filter bookmarks and let optional fzf select one without modifying the store."""
+    store = _store_from_args(args)
+    store.require_exists(f"store not found: {store.root}; check --store or run 'bm init'")
+    rows = _collect_rows(store, _filter_spec_from_args(args))
+    if not rows:
+        raise BmError("no bookmarks match; use 'bm list' or adjust the filters")
+    selected = _pick_row(rows)
+    if args.print_field:
+        print(selected[args.print_field])
+    else:
+        _open_url(selected["url"])
+
+
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
     store = _store_from_args(args)
     p = store.resolve(args.id)
     if not p:
-        raise NotFoundError("not found")
+        raise NotFoundError(
+            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
+            "to find an ID or path"
+        )
 
     original = store.snapshot(p)
     fd, tmp_name = tempfile.mkstemp(
@@ -335,7 +428,10 @@ def cmd_rm(args) -> None:
     store = _store_from_args(args)
     p = store.resolve(args.id)
     if not p:
-        raise NotFoundError("not found")
+        raise NotFoundError(
+            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
+            "to find an ID or path"
+        )
     store.delete(p, expected=store.snapshot(p))
 
 
@@ -344,12 +440,14 @@ def cmd_mv(args) -> None:
     store = _store_from_args(args)
     src = store.resolve(args.src)
     if not src:
-        raise NotFoundError("source not found")
+        raise NotFoundError(f"source not found: {args.src!r}; use 'bm list' to find an ID or path")
     dst = store.path_for(args.dst)
     try:
         store.move(src, dst, expected=store.snapshot(src), force=args.force)
     except FileExistsError as exc:
-        raise BmError("destination exists (use --force)") from exc
+        raise BmError(
+            f"destination exists: {args.dst!r}; choose a different path or use --force to replace it"
+        ) from exc
     except OSError as exc:
         raise BmError(f"move failed: {exc}") from exc
     print(dst.relative_to(store.root).with_suffix("").as_posix())
@@ -509,7 +607,10 @@ def cmd_tag(args) -> None:
     store = _store_from_args(args)
     p = store.resolve(args.id)
     if not p:
-        raise NotFoundError("not found")
+        raise NotFoundError(
+            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
+            "to find an ID or path"
+        )
     original = store.snapshot(p)
     meta, body = load_entry(p)
     cur = set(meta.get("tags", []))
@@ -563,8 +664,26 @@ def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
 
 
 def cmd_export(args) -> None:
-    """Export bookmarks."""
+    """Export to stdout or safely publish a completed file in any format."""
     store = _store_from_args(args)
+    output = getattr(args, "output", None)
+    if output is None:
+        _render_export(args, store)
+        return
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        _render_export(args, store)
+    try:
+        atomic_create(Path(output), buffer.getvalue().encode("utf-8"))
+    except FileExistsError as exc:
+        raise BmError(f"output already exists: {output}; choose a new output filename") from exc
+
+
+def _render_export(args, store: Store) -> None:
+    """Retain streaming stdout behavior when no output file is requested."""
+    if args.fmt is None:
+        sys.stdout.write(build_backup(store))
+        return
     filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":
         _export_netscape(store, filters)
@@ -577,56 +696,175 @@ def cmd_export(args) -> None:
         raise BmError("unknown export format")
 
 
+def _import_backup(args, store: Store, text: str) -> None:
+    """Preflight a complete backup and report conflicts before writing."""
+    plan = plan_restore(store, read_backup(text), ALLOWED_URL_SCHEMES, force=args.force)
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run or plan.conflicts:
+        print(plan.summary(preview=True))
+    if plan.conflicts:
+        details = "\n".join(f"  {name}" for name in plan.conflicts)
+        raise BmError(
+            f"{len(plan.conflicts)} conflicting paths:\n{details}\n"
+            "No files written. Use --force to replace conflicting files."
+        )
+    if not dry_run:
+        try:
+            apply_restore(store, plan)
+        except (OSError, BmError) as exc:
+            raise BmError(
+                f"restore stopped: {exc}; earlier files may have been written. "
+                "Inspect the store and retry."
+            ) from exc
+        print(plan.summary(preview=False))
+
+
+def _check_import_root(store: Store) -> None:
+    """Do not preview a store whose root or ancestors cannot be directories."""
+    for parent in (store.root, *store.root.parents):
+        if (parent.exists() or parent.is_symlink()) and not parent.is_dir():
+            raise BmError(
+                f"store path is blocked by a non-directory: {parent}; choose another --store path"
+            )
+
+
 def cmd_import(args) -> None:
-    """Import bookmarks from Netscape HTML."""
+    """Recognize a lossless JSON backup or import Netscape HTML."""
     store = _store_from_args(args)
-    store.create()
     try:
-        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        if args.file == "-":
+            stream = getattr(sys.stdin, "buffer", None)
+            raw = stream.read() if stream is not None else sys.stdin.read().encode("utf-8")
+        else:
+            raw = Path(args.file).read_bytes()
     except FileNotFoundError as exc:
         raise NotFoundError(f"import file not found: {args.file}") from exc
-    entries = parse_netscape_html(text, default_created=iso_now())
-    skipped_scheme = 0
-    skipped_unsafe = 0
-    written = 0
-    for path, meta in entries:
-        scheme = (urlparse(meta.get("url", "")).scheme or "").lower()
+    if not raw.strip():
+        raise BmError("import input is empty; provide a backup or browser export")
+    _check_import_root(store)
+    text = raw.decode("utf-8-sig", errors="replace")
+    if text.lstrip().startswith(("{", "[")) or Path(args.file).suffix.lower() in {
+        ".json",
+        ".jsonl",
+    }:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeError as exc:
+            raise BmError("backup must be valid UTF-8") from exc
+        _import_backup(args, store, text)
+        return
+    _import_netscape(args, store, text)
+
+
+def _check_import_destination(store: Store, path: Path) -> None:
+    """Reject blocked or linked destinations identically in previews and writes."""
+    current = store.root
+    for part in path.relative_to(store.root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise UnsafePathError(f"symlink in import destination: {current}")
+        if not current.exists():
+            continue
+        if current == path:
+            if not current.is_file():
+                raise UnsafePathError(f"destination is not a regular file: {current}")
+        elif not current.is_dir():
+            raise UnsafePathError(f"parent is not a directory: {current}")
+
+
+def _netscape_import_path(
+    store: Store, folder: str, meta: dict, counts: dict[str, int]
+) -> Path | None:
+    """Validate a browser record and retain diagnostic counts for previews."""
+    try:
+        parsed = urlparse(meta.get("url", ""))
+        scheme = parsed.scheme.lower()
         if scheme not in ALLOWED_URL_SCHEMES:
-            skipped_scheme += 1
-            continue
+            counts["invalid_scheme"] += 1
+            return None
+        if scheme == "mailto":
+            if not parsed.path:
+                raise ValueError("missing mail address")
+        elif not parsed.hostname:
+            raise ValueError("missing URL host")
+        _ = parsed.port
         slug = create_slug_from_url(meta["url"])
-        full_path = f"{path}/{slug}" if path else slug
-        try:
-            fpath = store.path_for(full_path)
-        except UnsafePathError as exc:
-            print(f"bm: skipped import path {full_path!r}: {exc}", file=sys.stderr)
-            skipped_unsafe += 1
+    except ValueError as exc:
+        counts["invalid_url"] += 1
+        print(f"bm: skipped invalid import URL: {exc}", file=sys.stderr)
+        return None
+    full_path = f"{folder}/{slug}" if folder else slug
+    try:
+        destination = store.path_for(full_path)
+        _check_import_destination(store, destination)
+        return destination
+    except UnsafePathError as exc:
+        print(f"bm: skipped import path {full_path!r}: {exc}", file=sys.stderr)
+        counts["unsafe"] += 1
+        return None
+
+
+def _import_netscape(args, store: Store, text: str) -> None:
+    """Import browser data, retaining the existing best-effort behavior."""
+    dry_run = getattr(args, "dry_run", False)
+    entries, missing_href = parse_netscape_document(text, default_created=iso_now())
+    counts = dict(
+        added=0,
+        replaced=0,
+        skipped_existing=0,
+        invalid_scheme=0,
+        invalid_url=0,
+        unsafe=0,
+        missing_href=missing_href,
+    )
+    if not dry_run:
+        store.create()
+    seen_paths: set[Path] = set()
+    for folder, meta in entries:
+        fpath = _netscape_import_path(store, folder, meta, counts)
+        if fpath is None:
             continue
-        if fpath.exists() and not args.force:
+        exists = fpath.exists() or fpath in seen_paths
+        if exists and not args.force:
+            counts["skipped_existing"] += 1
             continue
-        try:
-            if args.force:
-                store.write(fpath, build_text(meta, ""))
-            else:
-                store.create_entry(fpath, build_text(meta, ""))
-        except FileExistsError:
-            # Preserve import's existing no-force skip behavior when the
-            # destination already exists or another writer wins publication.
-            continue
-        written += 1
-        _progress_tick("import", written)
-    _progress_done("import", written)
-    if skipped_scheme:
-        print(
-            f"bm: skipped {skipped_scheme} entries with disallowed URL scheme",
-            file=sys.stderr,
+        if not dry_run:
+            try:
+                if args.force:
+                    store.write(fpath, build_text(meta, ""))
+                else:
+                    store.create_entry(fpath, build_text(meta, ""))
+            except FileExistsError:
+                counts["skipped_existing"] += 1
+                continue
+        seen_paths.add(fpath)
+        counts["replaced" if exists else "added"] += 1
+        if not dry_run:
+            _progress_tick("import", counts["added"] + counts["replaced"])
+    if not dry_run:
+        _progress_done("import", counts["added"] + counts["replaced"])
+    _report_netscape_import(counts, dry_run)
+
+
+def _report_netscape_import(counts: dict[str, int], dry_run: bool) -> None:
+    """Keep browser import diagnostics and preview output together."""
+    for key, label in (
+        ("invalid_scheme", "disallowed URL scheme"),
+        ("unsafe", "unsafe folder paths"),
+        ("missing_href", "missing URL attributes"),
+    ):
+        if counts[key]:
+            print(f"bm: skipped {counts[key]} entries with {label}", file=sys.stderr)
+    if dry_run:
+        invalid = sum(
+            counts[key] for key in ("invalid_scheme", "invalid_url", "unsafe", "missing_href")
         )
-    if skipped_unsafe:
         print(
-            f"bm: skipped {skipped_unsafe} entries with unsafe folder paths",
-            file=sys.stderr,
+            f"Would add {counts['added']}, replace {counts['replaced']}, "
+            f"skip existing {counts['skipped_existing']}; invalid {invalid}.\nNo files written."
         )
-    print("import ok")
+    else:
+        print("import ok")
 
 
 # Neutralize store-local `.git/config` keys that can run arbitrary commands
@@ -699,6 +937,73 @@ def _run_git(
             exit_code=result.returncode or 1,
         )
     return result
+
+
+def _doctor_git(store: Store, report: DoctorReport) -> None:
+    """Check local Git discovery, HEAD shape, and locks without status/index writes."""
+    marker = store.root / ".git"
+    if marker.is_symlink():
+        report.add(
+            "git_symlink",
+            [".git"],
+            "Git metadata is a symlink and was not inspected.",
+            "Inspect the link manually before running Git commands.",
+        )
+        return
+    if not marker.exists():
+        return
+    try:
+        result = _run_git(store.root, "rev-parse", "--absolute-git-dir", capture_output=True)
+        git_dir = Path(result.stdout.strip())
+        head = git_dir / "HEAD"
+        if head.is_symlink():
+            raise BmError("Git HEAD is a symlink")
+        text = head.read_text(encoding="utf-8").strip()
+        if text.startswith("ref: "):
+            _run_git(store.root, "check-ref-format", text[5:], capture_output=True)
+        elif not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", text):
+            raise BmError("Git HEAD is malformed")
+        for name in ("index.lock", "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock"):
+            path = git_dir / name
+            if path.exists() or path.is_symlink():
+                report.add(
+                    "git_lock",
+                    [f".git/{name}"],
+                    "Git lock file is present.",
+                    "Check for active Git processes before considering manual lock removal.",
+                    warning=True,
+                )
+    except (BmError, OSError, UnicodeError) as exc:
+        report.add(
+            "git_problem",
+            [".git"],
+            str(exc),
+            "Inspect Git metadata/configuration manually; doctor never changes it.",
+        )
+
+
+def cmd_doctor(args) -> None:
+    """Report problems without repair, network access, or browser/editor launches."""
+    store = _store_from_args(args)
+    report = inspect_store(store, ALLOWED_URL_SCHEMES)
+    if store.exists():
+        _doctor_git(store, report)
+    document = report.document()
+    if args.json:
+        print(json.dumps(document, ensure_ascii=False))
+    elif document["ok"]:
+        noun = "bookmark" if report.checked == 1 else "bookmarks"
+        print(f"Store healthy: {report.checked} {noun} checked.")
+    else:
+        for item in document["findings"]:
+            paths = ", ".join(repr(path) for path in item["paths"])
+            print(f"{item['severity'].upper()} {item['code']}: {paths}")
+            print(f"  {item['message']}\n  Next: {item['hint']}")
+        print(
+            f"Checked bookmarks: {report.checked}; findings: {len(report.findings)}. No files changed."
+        )
+    if report.findings:
+        raise BmError(exit_code=1)
 
 
 def cmd_sync(args) -> None:

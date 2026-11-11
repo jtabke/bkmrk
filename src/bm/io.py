@@ -255,15 +255,19 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _write_temp(fd: int, data: str) -> None:
-    """Write and fsync a temporary text file before publishing it."""
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+def _write_temp(fd: int, data: str | bytes) -> None:
+    """Write and fsync a temporary file before publishing it."""
+    if isinstance(data, bytes):
+        stream = os.fdopen(fd, "wb")
+    else:
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+    with stream as f:
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
 
 
-def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> None:
+def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None) -> None:
     """Write data to path atomically and, when requested, only if unchanged.
 
     Refuses to overwrite an existing symlink at ``path`` so a planted symlink
@@ -299,7 +303,7 @@ def atomic_write(path: Path, data: str, expected: Optional[bytes] = None) -> Non
         raise
 
 
-def atomic_create(path: Path, data: str) -> None:
+def atomic_create(path: Path, data: str | bytes) -> None:
     """Create a file without replacing a destination that appears concurrently.
 
     Data is written and fsynced to a same-directory temporary file first. A
