@@ -174,6 +174,49 @@ Body
         assert meta["notes"] == "value --- remains a value"
         assert body == "Body\n"
 
+    def test_front_matter_scanner_preserves_splitlines_boundaries(self):
+        """Optimized scanning must retain the original delimiter semantics."""
+        from bm.io import _split_front_matter
+
+        separators = [
+            "\n",
+            "\r",
+            "\r\n",
+            "\v",
+            "\f",
+            "\x1c",
+            "\x1d",
+            "\x1e",
+            "\x85",
+            "\u2028",
+            "\u2029",
+        ]
+        for opening in ["---\n", "---\r\n"]:
+            for separator in separators:
+                for ending in separators + [""]:
+                    for marker in ["---", "----", " ---", "--- "]:
+                        rest = "title: Example" + separator + marker + ending + "body\n---\nmore"
+                        expected = None
+                        offset = 0
+                        for line in rest.splitlines(keepends=True):
+                            if line.rstrip("\r\n") == "---":
+                                expected = (rest[:offset], rest[offset + len(line) :])
+                                break
+                            offset += len(line)
+                        assert _split_front_matter(opening + rest) == expected
+
+    @pytest.mark.parametrize("ending", ["", "\n", "\r", "\r\n"])
+    def test_front_matter_closes_at_eof(self, ending):
+        meta, body = parse_front_matter("---\ntitle: Example\n---" + ending)
+        assert meta == {"title": "Example", "tags": []}
+        assert body == ""
+
+    def test_front_matter_preserves_large_body_and_embedded_delimiters(self):
+        body = ("Long notes\r\n---\n" * 25000) + "last line"
+        meta, parsed_body = parse_front_matter("---\ntitle: Example\n---\n" + body)
+        assert meta["title"] == "Example"
+        assert parsed_body == body
+
     def test_crlf_front_matter_delimiters(self):
         """Opening, closing, and body boundaries support CRLF input."""
         text = "---\r\nurl: https://example.com\r\ntitle: Example\r\n---\r\nBody\r\n"

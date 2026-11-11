@@ -1,6 +1,7 @@
 """Input/Output functions for bookmarks."""
 
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -11,6 +12,12 @@ from .models import FM_END, FM_START
 
 # Compatibility alias for callers that imported the old persistence exception.
 ConcurrentModificationError = ConflictError
+
+# Match the same line starts as str.splitlines(), without splitting the body.
+# Only CR/LF (or EOF) may terminate a delimiter, matching the old rstrip check.
+_FRONT_MATTER_CLOSE = re.compile(
+    r"(?:\A|(?<=[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]))---(?:\r\n|[\r\n]|\Z)"
+)
 
 
 def _normalize_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -139,14 +146,10 @@ def _split_front_matter(text: str) -> Optional[Tuple[str, str]]:
     else:
         return None
 
-    rest = text[opening_end:]
-    offset = 0
-    for line in rest.splitlines(keepends=True):
-        if line.rstrip("\r\n") == "---":
-            end = offset + len(line)
-            return rest[:offset], rest[end:]
-        offset += len(line)
-    return None
+    closing = _FRONT_MATTER_CLOSE.search(text, opening_end)
+    if closing is None:
+        return None
+    return text[opening_end : closing.start()], text[closing.end() :]
 
 
 def parse_front_matter(text: str) -> Tuple[Dict[str, Any], str]:

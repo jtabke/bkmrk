@@ -10,26 +10,6 @@ from contextlib import redirect_stdout
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional, Sequence, TextIO
 
-from .commands import (
-    cmd_add,
-    cmd_dedupe,
-    cmd_dirs,
-    cmd_doctor,
-    cmd_edit,
-    cmd_export,
-    cmd_import,
-    cmd_init,
-    cmd_list,
-    cmd_mv,
-    cmd_open,
-    cmd_pick,
-    cmd_rm,
-    cmd_search,
-    cmd_show,
-    cmd_sync,
-    cmd_tag,
-    cmd_tags,
-)
 from .errors import BmError
 
 
@@ -144,7 +124,9 @@ def _flush_stdout(status: int) -> int:
 def _run_command(args: argparse.Namespace) -> int:
     """Dispatch parsed arguments and translate command-level failures."""
     try:
-        args.func(args)
+        from . import commands
+
+        getattr(commands, args.func)(args)
     except KeyboardInterrupt:
         return 130
     except BrokenPipeError:
@@ -197,7 +179,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     p = sp.add_parser("init", help="Create a new store")
     p.add_argument("--git", action="store_true", help="Initialize a git repo in the store")
-    p.set_defaults(func=cmd_init)
+    p.set_defaults(func="cmd_init")
 
     p = sp.add_parser("add", help="Add a bookmark")
     p.add_argument("url", help="URL, or - to read exactly one URL from stdin")
@@ -208,11 +190,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--id", help="Explicit id/slug (relative path ok)")
     p.add_argument("--edit", action="store_true", help="Open $EDITOR with a prefilled template")
     p.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
-    p.set_defaults(func=cmd_add)
+    p.set_defaults(func="cmd_add")
 
     p = sp.add_parser("show", help="Show an entry")
     p.add_argument("id", help="Stable ID or path/slug")
-    p.set_defaults(func=cmd_show)
+    p.set_defaults(func="cmd_show")
 
     p = sp.add_parser("open", help="Open in browser")
     p.add_argument("id", help="Stable ID or path/slug")
@@ -221,14 +203,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Open URL even when its scheme is outside the safe allow-list",
     )
-    p.set_defaults(func=cmd_open)
+    p.set_defaults(func="cmd_open")
 
     p = sp.add_parser("list", help="List all entries")
     _add_filter_flags(p)
     output = p.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="Emit JSON array")
     output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
-    p.set_defaults(func=cmd_list)
+    p.set_defaults(func="cmd_list")
 
     p = sp.add_parser(
         "search",
@@ -255,7 +237,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output = p.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="Emit JSON array")
     output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
-    p.set_defaults(func=cmd_search)
+    p.set_defaults(func="cmd_search")
 
     p = sp.add_parser("pick", help="Select a bookmark using optional fzf (opens by default)")
     _add_filter_flags(p)
@@ -265,43 +247,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         choices=["id", "url"],
         help="Print the selected ID or URL instead of opening a browser",
     )
-    p.set_defaults(func=cmd_pick)
+    p.set_defaults(func="cmd_pick")
 
     p = sp.add_parser("edit", help="Edit with $EDITOR / $VISUAL")
     p.add_argument("id")
-    p.set_defaults(func=cmd_edit)
+    p.set_defaults(func="cmd_edit")
 
     p = sp.add_parser("rm", help="Remove an entry")
     p.add_argument("id")
-    p.set_defaults(func=cmd_rm)
+    p.set_defaults(func="cmd_rm")
 
     p = sp.add_parser("mv", help="Rename/move an entry")
     p.add_argument("src")
     p.add_argument("dst")
     p.add_argument("-f", "--force", action="store_true")
-    p.set_defaults(func=cmd_mv)
+    p.set_defaults(func="cmd_mv")
 
     p = sp.add_parser("tags", help="List all discovered tags")
-    p.set_defaults(func=cmd_tags)
+    p.set_defaults(func="cmd_tags")
 
     p = sp.add_parser("dirs", help="List known directory prefixes")
     p.add_argument("--json", action="store_true", help="Emit JSON array")
-    p.set_defaults(func=cmd_dirs)
+    p.set_defaults(func="cmd_dirs")
 
     p = sp.add_parser("dedupe", help="Merge duplicate bookmarks by normalized URL")
     p.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
     p.add_argument("--json", action="store_true", help="Emit JSON summary")
-    p.set_defaults(func=cmd_dedupe)
+    p.set_defaults(func="cmd_dedupe")
 
     p = sp.add_parser("doctor", help="Check store health without changing files")
     p.add_argument("--json", action="store_true", help="Emit a structured diagnostic report")
-    p.set_defaults(func=cmd_doctor)
+    p.set_defaults(func="cmd_doctor")
 
     p = sp.add_parser("tag", help="Mutate tags without editing")
     p.add_argument("action", choices=["add", "rm"])
     p.add_argument("id")
     p.add_argument("tags", nargs="+")
-    p.set_defaults(func=cmd_tag)
+    p.set_defaults(func="cmd_tag")
 
     p = sp.add_parser(
         "export",
@@ -313,11 +295,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
     p.add_argument("-o", "--output", help="Write to a new file (never overwrite)")
-    p.set_defaults(func=cmd_export)
+    p.set_defaults(func="cmd_export")
     spx = p.add_subparsers(dest="fmt")
     pe = spx.add_parser("netscape", help="Export as Netscape bookmarks HTML")
     _add_filter_flags(pe)
-    pe.set_defaults(func=cmd_export)
+    pe.set_defaults(func="cmd_export")
     pj = spx.add_parser("json", help="Export as JSON array")
     _add_filter_flags(pj)
     pj.add_argument(
@@ -325,7 +307,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Stream JSON Lines (NDJSON) instead of a single sorted array",
     )
-    pj.set_defaults(func=cmd_export)
+    pj.set_defaults(func="cmd_export")
 
     p = sp.add_parser(
         "import",
@@ -341,10 +323,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "-f", "--force", action="store_true", help="Replace matching paths, keep unrelated files"
     )
     p.add_argument("--dry-run", action="store_true", help="Preview without filesystem changes")
-    p.set_defaults(func=cmd_import)
+    p.set_defaults(func="cmd_import")
 
     p = sp.add_parser("sync", help="git add/commit/push if repo")
-    p.set_defaults(func=cmd_sync)
+    p.set_defaults(func="cmd_sync")
 
     _add_command_options(list(sp.choices.values()), (pe, pj))
 

@@ -14,21 +14,21 @@ from bm.errors import AmbiguousEntryError, NotFoundError, UnsafePathError
 class TestMain:
     """Test main function."""
 
-    @patch("bm.cli.cmd_init")
+    @patch("bm.commands.cmd_init")
     def test_init_command(self, mock_cmd):
         """Should call cmd_init for init command."""
         with patch("sys.argv", ["bm", "init", "--git"]):
             assert main() == 0
             mock_cmd.assert_called_once()
 
-    @patch("bm.cli.cmd_add")
+    @patch("bm.commands.cmd_add")
     def test_add_command(self, mock_cmd):
         """Should call cmd_add for add command."""
         with patch("sys.argv", ["bm", "add", "https://example.com"]):
             assert main() == 0
             mock_cmd.assert_called_once()
 
-    @patch("bm.cli.cmd_add")
+    @patch("bm.commands.cmd_add")
     def test_add_command_args(self, mock_cmd):
         """Should call cmd_add with correct args."""
         with patch("sys.argv", ["bm", "add", "https://example.com", "--name", "N"]):
@@ -58,17 +58,17 @@ class TestMain:
         captured = capsys.readouterr()
         assert "nope" in captured.out or "nope" in captured.err
 
-    @patch("bm.cli.cmd_list", side_effect=KeyboardInterrupt)
+    @patch("bm.commands.cmd_list", side_effect=KeyboardInterrupt)
     def test_keyboard_interrupt_exits_130(self, _mock):
         with patch("sys.argv", ["bm", "list"]):
             assert main() == 130
 
-    @patch("bm.cli.cmd_list", side_effect=BrokenPipeError)
+    @patch("bm.commands.cmd_list", side_effect=BrokenPipeError)
     def test_broken_pipe_exits_zero(self, _mock):
         with patch("sys.argv", ["bm", "list"]):
             assert main() == 0
 
-    @patch("bm.cli.cmd_list", side_effect=UnsafePathError("absolute paths not allowed"))
+    @patch("bm.commands.cmd_list", side_effect=UnsafePathError("absolute paths not allowed"))
     def test_application_error_uses_declared_exit_code(self, _mock, capsys):
         with patch("sys.argv", ["bm", "list"]):
             assert main() == 1
@@ -82,11 +82,11 @@ class TestMain:
         ],
     )
     def test_domain_errors_are_rendered_at_cli_boundary(self, error, message, capsys):
-        with patch("bm.cli.cmd_list", side_effect=error), patch("sys.argv", ["bm", "list"]):
+        with patch("bm.commands.cmd_list", side_effect=error), patch("sys.argv", ["bm", "list"]):
             assert main() == 1
         assert capsys.readouterr().err == f"bm: {message}\n"
 
-    @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
+    @patch("bm.commands.cmd_list", side_effect=RuntimeError("boom"))
     def test_unexpected_exception_exits_2(self, _mock, capsys):
         with patch("sys.argv", ["bm", "list"]):
             assert main() == 2
@@ -94,7 +94,7 @@ class TestMain:
         assert "RuntimeError" in captured.err
         assert "boom" in captured.err
 
-    @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
+    @patch("bm.commands.cmd_list", side_effect=RuntimeError("boom"))
     def test_bm_debug_re_raises(self, _mock):
         with (
             patch("sys.argv", ["bm", "list"]),
@@ -150,7 +150,7 @@ def test_windows_pipe_einval_is_quiet_and_restores_stdout(capsys):
         print("example")
 
     with patch("bm.cli._stdout_is_windows_pipe", return_value=True):
-        with patch("bm.cli.cmd_list", side_effect=output):
+        with patch("bm.commands.cmd_list", side_effect=output):
             with patch("bm.cli.os.dup2") as dup2, patch.object(sys, "stdout", stream):
                 assert main(["--store", "unused-store", "list"]) == 0
                 assert sys.stdout is stream
@@ -161,9 +161,41 @@ def test_windows_pipe_einval_is_quiet_and_restores_stdout(capsys):
 def test_windows_pipe_adapter_does_not_hide_command_io_errors(capsys):
     error = OSError(errno.EINVAL, "storage failure")
     with patch("bm.cli._stdout_is_windows_pipe", return_value=True):
-        with patch("bm.cli.cmd_list", side_effect=error):
+        with patch("bm.commands.cmd_list", side_effect=error):
             assert main(["--store", "unused-store", "list"]) == 2
     assert "storage failure" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["--help"], 0),
+        (["--version"], 0),
+        (["list", "--help"], 0),
+        (["export", "json", "--help"], 0),
+        (["unknown-command"], 2),
+        ([], 2),
+    ],
+)
+def test_parser_only_requests_do_not_import_commands(tmp_path, argv, expected):
+    import subprocess
+    from pathlib import Path
+
+    import bm
+
+    env = dict(
+        os.environ, PYTHONPATH=str(Path(bm.__file__).parent.parent), BOOKMARKS_DIR=str(tmp_path)
+    )
+    script = (
+        "import sys; from bm.cli import main; "
+        f"status = main({argv!r}); "
+        f"assert status == {expected}; "
+        "assert 'bm.commands' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_module_entry_point_runs():
