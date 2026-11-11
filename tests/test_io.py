@@ -15,6 +15,139 @@ from bm.io import (
 )
 
 
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "O'Reilly",
+        'say"hello',
+        "with,comma",
+        "two words",
+        " leading ",
+        "",
+        r"C:\reading\notes",
+        r"quote\"slash\\",
+        "café",
+        "line\nfeed",
+        "tab\tinside",
+        "single'and\"double",
+        "[brackets]",
+        "next\u0085line",
+        "next\u2028line",
+        "next\u2029line",
+    ],
+)
+def test_tag_round_trip(tag):
+    meta, body = parse_front_matter(
+        build_text({"url": "https://example.com", "tags": [tag]}, "notes")
+    )
+    assert meta["tags"] == [tag]
+    assert body == "notes"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("[O'Reilly, say\"hello]", ["O'Reilly", 'say"hello']),
+        ("['comma,tag', plain]", ["comma,tag", "plain"]),
+        (r'["C:\legacy\path", plain]', [r"C:\legacy\path", "plain"]),
+        (r'["C:\new folder", plain]', [r"C:\new folder", "plain"]),
+        (r"['C:\new folder', plain]", [r"C:\new folder", "plain"]),
+        (
+            r'["\n", "\t", "\r", "\b", "\f", "\u0041"]',
+            [r"\n", r"\t", r"\r", r"\b", r"\f", r"\u0041"],
+        ),
+        (
+            r'["\\server\new folder", "trailing\", plain]',
+            [r"\\server\new folder", "trailing\\", "plain"],
+        ),
+        ('["quoted", unquoted]', ["quoted", "unquoted"]),
+    ],
+)
+def test_legacy_tag_forms_remain_readable(text, expected):
+    meta, _ = parse_front_matter(f"---\ntags: {text}\n---\n")
+    assert meta["tags"] == expected
+
+
+@pytest.mark.parametrize(
+    "header,problem",
+    [
+        ("title: first\ntitle: second\n", "Repeated front-matter key"),
+        ("not a field\n", "Invalid front-matter line"),
+        (": no key\n", "Invalid front-matter line"),
+        ("notes: |\n  text\n invalid indentation\n", "Invalid front-matter line"),
+    ],
+)
+def test_parser_diagnostics_share_the_tolerant_parse(header, problem):
+    text = "---\n" + header + "---\nnotes\n"
+    diagnostics = []
+    result = parse_front_matter(text, diagnostics=diagnostics)
+    assert result == parse_front_matter(text)
+    assert any(problem in item for item in diagnostics)
+
+
+@pytest.mark.parametrize("tags", [[r"C:\new folder"], ['say"hello'], ["line\nfeed"], [r"\u0041"]])
+def test_escaped_tag_lists_are_explicit_and_stable_across_rewrites(tags):
+    text = build_text({"tags": tags}, "")
+    assert "tags: json:[" in text
+    meta, _ = parse_front_matter(text)
+    assert meta["tags"] == tags
+    assert build_text(meta, "") == text
+
+
+@pytest.mark.parametrize("value", ['json:["unterminated]', "json:[1]", "json:[null]"])
+def test_invalid_encoded_tags_are_diagnosed_and_retained(value):
+    diagnostics = []
+    meta, _ = parse_front_matter(f"---\ntags: {value}\n---\n", diagnostics=diagnostics)
+    assert diagnostics == ["Invalid JSON-encoded tags (expected an array of strings)."]
+    assert meta["tags"] == [value]
+    rewritten, _ = parse_front_matter(build_text(meta, ""))
+    assert rewritten["tags"] == [value]
+
+
+def test_block_scalar_keys_are_not_duplicate_header_fields():
+    diagnostics = []
+    meta, _ = parse_front_matter(
+        "---\nnotes: |\n  title: text\n  title: more text\ntitle: actual\n---\n",
+        diagnostics=diagnostics,
+    )
+    assert not diagnostics
+    assert meta["notes"] == "title: text\ntitle: more text"
+    assert meta["title"] == "actual"
+
+
+def test_atomic_text_create_publishes_only_on_success(tmp_path):
+    from bm.io import atomic_text_create
+
+    destination = tmp_path / "export.jsonl"
+    with atomic_text_create(destination) as stream:
+        stream.write("first\n")
+        stream.flush()
+        assert not destination.exists()
+        stream.write("café\n")
+    assert destination.read_bytes() == "first\ncafé\n".encode()
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_atomic_text_create_serialization_failure_cleans_up(tmp_path):
+    from bm.io import atomic_text_create
+
+    destination = tmp_path / "export.jsonl"
+    with pytest.raises(ValueError, match="serializer"):
+        with atomic_text_create(destination) as stream:
+            stream.write("incomplete")
+            raise ValueError("serializer failed")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_create_retains_arbitrary_bytes(tmp_path):
+    from bm.io import atomic_create
+
+    destination = tmp_path / "raw"
+    content = b"\xff\x00\r\nexact bytes"
+    atomic_create(destination, content)
+    assert destination.read_bytes() == content
+
+
 class TestNormalizeMeta:
     """Test _normalize_meta function."""
 

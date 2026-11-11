@@ -1,45 +1,35 @@
 """Versioned, exact-content JSON backups and preflighted restore plans."""
 
+import io
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, TextIO
 
 from .errors import BmError, UnsafePathError
 from .io import parse_front_matter
+from .paths import is_reserved_path
 from .store import Store
-from .utils import _reject_unsafe, _reject_windows_names
+from .urls import inspect_url
 
 BACKUP_FORMAT = "bm-backup"
 BACKUP_VERSION = 1
 
 
-def backup_path(store: Store, name: str) -> Path:
-    """Validate an exact archive path without slug normalization or symlinks."""
-    if (
-        not name
-        or "\\" in name
-        or _reject_unsafe(name) != name
-        or not name.endswith(".bm")
-        or any(part.casefold() == ".git" for part in name.split("/"))
-    ):
-        raise UnsafePathError(f"unsafe backup path: {name!r}")
-    if sys.platform == "win32":
-        _reject_windows_names(name)
-    path = store.root
-    for part in name.split("/"):
-        path = path / part
-        if path.is_symlink():
-            raise UnsafePathError(f"symlink in backup path: {name!r}")
-        if path != store.root / name and path.exists() and not path.is_dir():
-            raise UnsafePathError(f"parent is not a directory: {name!r}")
-    return store._check_member(path)
+def _backup_record(store: Store, relative: str) -> dict[str, str]:
+    """Read one exact-content record, refusing incomplete or unsafe backups."""
+    path = store.exact_path(relative)
+    if not path.is_file():
+        raise BmError(f"bookmark is not a regular file: {relative!r}")
+    try:
+        content = path.read_bytes().decode("utf-8")
+    except UnicodeError as exc:
+        raise BmError(f"bookmark is not valid UTF-8: {relative!r}") from exc
+    return {"path": relative, "content": content}
 
 
-def build_backup(store: Store) -> str:
+def write_backup(store: Store, stream: TextIO) -> None:
     """Serialize every bookmark, failing rather than silently skipping files."""
     store.require_exists()
     records = []
@@ -48,31 +38,36 @@ def build_backup(store: Store) -> str:
         raise exc
 
     for root, dirs, files in os.walk(store.root, onerror=fail):
-        dirs[:] = [name for name in dirs if name.casefold() != ".git"]
-        for name in dirs:
-            if (Path(root) / name).is_symlink():
-                raise UnsafePathError(f"symlink directory in store: {Path(root) / name}")
+        in_git = is_reserved_path(Path(root).relative_to(store.root).as_posix())
+        if not in_git:
+            for name in dirs:
+                if name.casefold() != ".git" and (Path(root) / name).is_symlink():
+                    raise UnsafePathError(f"symlink directory in store: {Path(root) / name}")
         for name in files:
             if not name.endswith(".bm"):
                 continue
             relative = (Path(root) / name).relative_to(store.root).as_posix()
-            path = backup_path(store, relative)
-            if not path.is_file():
-                raise BmError(f"bookmark is not a regular file: {relative!r}")
-            try:
-                content = path.read_bytes().decode("utf-8")
-            except UnicodeError as exc:
-                raise BmError(f"bookmark is not valid UTF-8: {relative!r}") from exc
-            records.append({"path": relative, "content": content})
+            if in_git:
+                raise UnsafePathError(
+                    f"bookmark in reserved namespace: {relative}; "
+                    "move it outside Git metadata before backing up"
+                )
+            records.append(_backup_record(store, relative))
     records.sort(key=lambda record: record["path"])
-    return (
-        json.dumps(
-            {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "entries": records},
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n"
+    json.dump(
+        {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "entries": records},
+        stream,
+        ensure_ascii=False,
+        indent=2,
     )
+    stream.write("\n")
+
+
+def build_backup(store: Store) -> str:
+    """Return a backup string for embedding; CLI writers use the stream API."""
+    stream = io.StringIO()
+    write_backup(store, stream)
+    return stream.getvalue()
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -148,7 +143,7 @@ def plan_restore(
     ancestors: set[Path] = set()
     for entry in sorted(entries, key=lambda record: record["path"]):
         name = entry["path"]
-        path = backup_path(store, name)
+        path = store.exact_path(name)
         destination = path.resolve()
         if destination in seen:
             raise BmError(f"duplicate backup destination: {name!r}")
@@ -159,10 +154,12 @@ def plan_restore(
         try:
             content = entry["content"].encode("utf-8")
             meta, _ = parse_front_matter(entry["content"])
-            scheme = urlparse(meta.get("url", "")).scheme.lower()
+            inspection = inspect_url(meta.get("url", ""), schemes)
         except (UnicodeError, ValueError) as exc:
             raise BmError(f"invalid bookmark {name!r}: {exc}") from exc
-        if scheme not in schemes:
+        # Exact restore preserves supported-scheme content, including malformed
+        # hosts/ports. Doctor diagnoses structure; browser import rejects it.
+        if not inspection.supported:
             raise BmError(f"missing or unsupported URL scheme in {name!r}")
         if path.exists() and not path.is_file():
             raise BmError(f"destination is not a regular file: {name!r}")
@@ -182,7 +179,7 @@ def apply_restore(store: Store, plan: RestorePlan) -> None:
         raise BmError("restore has unresolved conflicts")
     for item in plan.items:
         name = item.path.relative_to(store.root).as_posix()
-        backup_path(store, name)
+        store.exact_path(name)
         if item.previous is None:
             store.create_entry(item.path, item.content)
         else:

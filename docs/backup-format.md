@@ -23,6 +23,10 @@ an existing file before `bm` runs; prefer `-o` for backups.
 `export netscape` and `export json` / `--jsonl` retain their existing formats and filters.
 They also support safe file output, for example `bm export json -o metadata.json` and
 `bm export netscape -o bookmarks.html`. `-o` works before or after the format name.
+Serializers write directly to stdout or a same-directory temporary file; JSONL keeps
+record-by-record streaming in both cases. Publication occurs only after serialization
+and file fsync succeed. Backup and sorted-array exports still collect their records to
+validate and order the document before writing it.
 They are interchange/pipeline exports, not lossless backups. Complete backups have no
 filter options and need no additional top-level commands.
 
@@ -62,9 +66,12 @@ A backup is a UTF-8 JSON object:
 
 The archive covers `.bm` files only. Git data, other store files, empty directories,
 permissions, filesystem timestamps, and hard-link identity are outside the contract.
-Export excludes `.git` directories and refuses symlink files/directories elsewhere in
-the bookmark tree. Unreadable, non-regular, or non-UTF-8 bookmarks fail the export; they
-are never silently omitted. Export preserves content without requiring it to be a valid
+Git metadata is not included. The `.git` namespace is reserved case-insensitively at
+every depth: new bookmark writes cannot target it, and legacy `.bm` files found there
+fail the export rather than being silently omitted. Preserve those files separately and
+relocate them manually; `bm doctor` reports their paths. Export also refuses symlink
+files/directories elsewhere in the bookmark tree. Unreadable, non-regular, or non-UTF-8
+bookmarks fail the export; they are never silently omitted. Export preserves content without requiring it to be a valid
 bookmark. A damaged bookmark can therefore be backed up, but must be corrected before
 restore if its URL is missing or unsupported.
 
@@ -78,7 +85,10 @@ continues to use the existing best-effort import rules.
 For a backup, preflight rejects malformed records, duplicate or overlapping destinations,
 symlink path components, escapes from the store, non-file destinations, and URLs whose
 scheme is missing or outside `http`, `https`, `ftp`, `ftps`, and `mailto`. Validation does
-not fetch URLs or launch external programs.
+not fetch URLs or launch external programs. Restore deliberately preserves malformed
+hosts/ports when the scheme is supported, so exact recovery remains possible; use
+`bm doctor` for structural diagnostics. Browser import uses the same URL inspector but
+rejects malformed structure rather than restoring it.
 
 | Destination | Default | `--force` |
 |---|---|---|

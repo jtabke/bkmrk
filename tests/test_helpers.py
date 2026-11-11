@@ -5,49 +5,48 @@ from pathlib import Path
 
 import pytest
 
-from bm.commands import _export_row, _filter_spec_from_args
-from bm.dedupe import _entry_score
+from bm.commands import _filter_spec_from_args
 from bm.errors import BmError
+from bm.exporting import export_row
+from bm.paths import matches_path_prefix, normalize_path_prefix
 from bm.query import (
     FilterSpec,
     _build_row,
     _build_search_blob,
     _make_search_predicate,
     _matches_host,
-    _matches_path,
     _matches_since,
     _matches_tag,
-    _normalize_path_arg,
     passes_filters,
 )
 
 
 class TestMatchesPath:
     def test_empty_prefix_matches_any(self):
-        assert _matches_path(Path("dev/python/foo"), "") is True
-        assert _matches_path(Path("dev/python/foo"), None) is True
+        assert matches_path_prefix(Path("dev/python/foo"), "") is True
+        assert matches_path_prefix(Path("dev/python/foo"), None) is True
 
     def test_strips_leading_and_trailing_slashes(self):
-        assert _matches_path(Path("dev/python/foo"), "/dev/python/") is True
-        assert _matches_path(Path("dev/python/foo"), "//dev//") is True
+        assert matches_path_prefix(Path("dev/python/foo"), "/dev/python/") is True
+        assert matches_path_prefix(Path("dev/python/foo"), "//dev//") is True
 
     def test_strip_removes_only_slashes(self):
         # Leading/trailing letters are significant path text, not strip chars.
-        assert _matches_path(Path("dev"), "/XdevX/") is False
+        assert matches_path_prefix(Path("dev"), "/XdevX/") is False
 
     def test_exact_match_returns_true(self):
-        assert _matches_path(Path("dev/python"), "dev/python") is True
+        assert matches_path_prefix(Path("dev/python"), "dev/python") is True
 
     def test_prefix_match_requires_segment_boundary(self):
         # Should not match `dev/pythonista` for prefix `dev/python` (no boundary).
-        assert _matches_path(Path("dev/pythonista"), "dev/python") is False
-        assert _matches_path(Path("dev/python/x"), "dev/python") is True
+        assert matches_path_prefix(Path("dev/pythonista"), "dev/python") is False
+        assert matches_path_prefix(Path("dev/python/x"), "dev/python") is True
 
     def test_non_matching_returns_false(self):
-        assert _matches_path(Path("news/x"), "dev") is False
+        assert matches_path_prefix(Path("news/x"), "dev") is False
 
     def test_blank_after_strip_treated_as_empty(self):
-        assert _matches_path(Path("anything"), "/") is True
+        assert matches_path_prefix(Path("anything"), "/") is True
 
 
 class TestMatchesTag:
@@ -121,10 +120,10 @@ class TestMatchesSince:
 
 class TestNormalizePathArg:
     def test_strips_slashes(self):
-        assert _normalize_path_arg("/dev/python/") == "dev/python"
+        assert normalize_path_prefix("/dev/python/") == "dev/python"
 
     def test_empty_string_returns_empty(self):
-        assert _normalize_path_arg("") == ""
+        assert normalize_path_prefix("") == ""
 
     def test_command_adapter_rejects_non_string_filter_values(self):
         import argparse
@@ -186,58 +185,13 @@ class TestBuildRowAndExport:
         assert row["tags"] == ["a"]
 
     def test_export_row_schema(self):
-        row = _export_row(
+        row = export_row(
             Path("dev/x"),
             {"url": "https://e.com", "title": "T", "tags": ["a"], "created": "c", "modified": "m"},
         )
         assert set(row.keys()) == {"path", "url", "title", "tags", "created", "modified"}
         assert row["path"] == "dev/x"
         assert row["url"] == "https://e.com"
-
-
-class TestEntryScore:
-    def test_longer_body_wins(self):
-        a = {"meta": {"title": "T"}, "body": "short", "rel": Path("a")}
-        b = {"meta": {"title": "T"}, "body": "much longer body text here", "rel": Path("b")}
-        # min by score → b wins because its score has more-negative body length
-        assert _entry_score(b) < _entry_score(a)
-
-    def test_when_body_tied_longer_title_wins(self):
-        a = {"meta": {"title": "T"}, "body": "x", "rel": Path("a")}
-        b = {"meta": {"title": "Longer"}, "body": "x", "rel": Path("b")}
-        assert _entry_score(b) < _entry_score(a)
-
-    def test_naive_created_normalized_to_utc(self):
-        # Naive datetime in `created` should compare without raising and use UTC.
-        e = {
-            "meta": {"title": "T", "created": "2024-01-15T10:00:00"},
-            "body": "x",
-            "rel": Path("a"),
-        }
-        score = _entry_score(e)
-        expected = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp()
-        assert score[2] == expected
-
-    def test_falls_back_to_modified_when_created_missing(self):
-        e = {
-            "meta": {"title": "T", "modified": "2024-06-01T00:00:00+00:00"},
-            "body": "x",
-            "rel": Path("a"),
-        }
-        expected = datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp()
-        assert _entry_score(e)[2] == expected
-
-    def test_no_dates_uses_inf(self):
-        e = {"meta": {"title": "T"}, "body": "x", "rel": Path("a")}
-        assert _entry_score(e)[2] == float("inf")
-
-    def test_rel_is_final_tiebreaker(self):
-        a = {"meta": {"title": "T"}, "body": "x", "rel": Path("a")}
-        b = {"meta": {"title": "T"}, "body": "x", "rel": Path("b")}
-        # Same body, title, and date → tiebreaker is the rel string.
-        assert _entry_score(a) < _entry_score(b)
-        assert _entry_score(a)[3] == "a"
-        assert _entry_score(b)[3] == "b"
 
 
 class TestBuildSearchBlob:

@@ -3,21 +3,13 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
-from bm.errors import UnsafePathError
 from bm.utils import (
-    _launch_editor,
     _normalize_netloc_for_compare,
     _normalize_path_for_compare,
     _normalize_query_string,
     _parse_for_compare,
-    _reject_unsafe,
     create_slug_from_url,
-    id_to_path,
-    is_relative_to,
     iso_now,
-    normalize_slug,
     normalize_url_for_compare,
     parse_iso,
     rid,
@@ -112,85 +104,6 @@ class TestToEpoch:
         """Should handle offset datetimes."""
         offset = datetime(2023, 1, 15, 22, 10, 45, tzinfo=timezone(timedelta(hours=1)))
         assert to_epoch(offset) == 1673817045
-
-
-class TestNormalizeSlug:
-    """Test normalize_slug function."""
-
-    def test_basic(self):
-        """Should normalize basic strings."""
-        assert normalize_slug("hello world") == "hello-world"
-        assert normalize_slug("Hello/World") == "hello/world"
-
-    def test_special_chars(self):
-        """Should remove special characters."""
-        assert normalize_slug("hello@world!") == "helloworld"
-
-    def test_multiple_dashes(self):
-        """Should collapse multiple dashes."""
-        assert normalize_slug("hello--world") == "hello-world"
-
-    def test_strip_slashes(self):
-        """Should strip leading/trailing slashes."""
-        assert normalize_slug("/hello/world/") == "hello/world"
-
-    def test_empty(self):
-        """Should return 'untitled' for empty string."""
-        assert normalize_slug("") == "untitled"
-        assert normalize_slug("   ") == "untitled"
-
-    def test_trim_leading_trailing_slashes(self):
-        """Should trim leading and trailing slashes."""
-        assert normalize_slug("/hello/world/") == "hello/world"
-        assert normalize_slug("///hello///") == "hello"
-
-    def test_reject_dot_dot(self):
-        """Should reject paths with .."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe("../escape")
-
-    def test_reject_absolute_path(self):
-        """Should reject absolute paths."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe("/absolute/path")
-
-    @pytest.mark.parametrize("path", [r"C:\\absolute\\path", r"\\\\server\\share\\bookmark"])
-    def test_reject_windows_absolute_path(self, path):
-        """Windows absolute paths must be rejected on every host platform."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe(path)
-
-    def test_reject_all_dots_segment(self):
-        """Should reject any segment that is entirely dots."""
-        for s in ["...", "....", "a/.../b"]:
-            with pytest.raises(UnsafePathError):
-                _reject_unsafe(s)
-
-    def test_reject_null_byte(self):
-        """Should reject NUL byte in any segment."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe("a/b\x00c")
-
-    def test_accept_leading_dot_segment(self):
-        """Single-dot prefix segments (e.g. .git) are accepted."""
-        assert _reject_unsafe(".git/config") == ".git/config"
-
-    def test_normalize_slug_collapse_multiple_dashes(self):
-        """Should collapse multiple consecutive dashes."""
-        assert normalize_slug("hello---world") == "hello-world"
-        assert normalize_slug("a----b") == "a-b"
-
-    def test_normalize_slug_unicode_handling(self):
-        """Should handle unicode characters."""
-        result = normalize_slug("héllo wörld")
-        assert result == "héllo-wörld"
-
-    def test_normalize_slug_strip_dashes_from_path_segments(self):
-        """Should strip trailing dashes from each path segment."""
-        assert normalize_slug("business-/slug") == "business/slug"
-        assert normalize_slug("business-/slug-") == "business/slug"
-        assert normalize_slug("-business/slug") == "business/slug"
-        assert normalize_slug("business-/-slug") == "business/slug"
 
 
 class TestNormalizeUrlForCompare:
@@ -316,59 +229,6 @@ class TestUrlCompareHelpers:
         assert _normalize_query_string("&&") == ""
 
 
-class TestRejectUnsafe:
-    """Test _reject_unsafe function."""
-
-    def test_safe_path(self):
-        """Should return path for safe input."""
-        assert _reject_unsafe("hello/world") == "hello/world"
-
-    def test_dot_dot(self):
-        """Should reject .. in a path."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe("hello/../world")
-
-    def test_absolute(self):
-        """Should reject absolute paths."""
-        with pytest.raises(UnsafePathError):
-            _reject_unsafe("/absolute/path")
-
-
-class TestIsRelativeTo:
-    """Test is_relative_to function."""
-
-    def test_relative(self, tmp_path):
-        """Should return True for relative paths."""
-        base = tmp_path / "base"
-        base.mkdir()
-        child = base / "child"
-        child.mkdir()
-        assert is_relative_to(child, base)
-
-    def test_not_relative(self, tmp_path):
-        """Should return False for non-relative paths."""
-        base = tmp_path / "base"
-        base.mkdir()
-        other = tmp_path / "other"
-        other.mkdir()
-        assert not is_relative_to(other, base)
-
-
-class TestIdToPath:
-    """Test id_to_path function."""
-
-    def test_basic(self, tmp_path):
-        """Should create path with extension."""
-        result = id_to_path(tmp_path, "test-slug")
-        assert str(result) == str(tmp_path / "test-slug.bm")
-
-    @pytest.mark.parametrize("slug", ["/absolute/path", r"C:\\absolute\\path"])
-    def test_rejects_raw_absolute_slug_before_normalizing(self, tmp_path, slug):
-        """Absolute slugs must not be silently converted to relative paths."""
-        with pytest.raises(UnsafePathError):
-            id_to_path(tmp_path, slug)
-
-
 class TestCreateSlugFromUrl:
     """Test create_slug_from_url function."""
 
@@ -471,18 +331,6 @@ class TestCreateSlugFromUrl:
         """Host ports should keep a dash separator rather than being concatenated."""
         slug = create_slug_from_url("https://example.com:8443/path")
         assert slug.startswith("example-com-8443-path-")
-
-
-class TestLaunchEditor:
-    """Test editor process failure handling."""
-
-    def test_nonzero_exit_is_reported(self, tmp_path, monkeypatch):
-        """A failed editor must prevent callers from committing its output."""
-        monkeypatch.setenv("EDITOR", "fake-editor")
-        monkeypatch.setattr("bm.utils.subprocess.call", lambda *args, **kwargs: 7)
-
-        with pytest.raises(OSError, match="status 7"):
-            _launch_editor(tmp_path / "bookmark.bm")
 
 
 class TestRid:

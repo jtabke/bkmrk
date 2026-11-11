@@ -197,6 +197,10 @@ Default store directory is `~/.bookmarks.d` (override via `$BOOKMARKS_DIR`). Eac
   README.txt
 ```
 
+The `.git` directory namespace is reserved at every depth (case-insensitive). New bookmark
+paths cannot target it. Existing `.bm` files there are reported by `doctor` and block
+backup export rather than being silently omitted; preserve and relocate them manually.
+
 Auto-generated file names are **human readable** and end with a **short hash of the URL** to avoid collisions. Explicit `--id` values and destinations supplied to `bm mv` are used instead and do not need to contain a hash.
 
 ### Bookmark file format
@@ -214,7 +218,12 @@ modified: 2025-09-17T09:10:00-07:00
 Longer notes, checklists, code blocks…
 ```
 
-- `tags` is a list and supports quoting for commas/spaces
+- `tags` accepts ordinary lists such as `[read, "with,comma"]`.
+  In these legacy lists, backslashes are always literal, even inside single or double
+  quotes: `tags: ["C:\new folder"]` retains the backslash rather than introducing a newline.
+  When tags need escape sequences, writers use an explicit `json:` prefix, for example
+  `tags: json:["say\"hello", "C:\\new folder"]`. Only this marked form interprets JSON
+  escapes. Ordinary lists remain readable, and rewrites preserve their tag values.
 - Any extra keys are preserved on round‑trip
 
 ### IDs
@@ -227,13 +236,18 @@ The implementation keeps the filesystem backend concrete and separates responsib
 
 - `bm.cli`: parser construction, `main(argv=None) -> int`, and process-boundary error/status handling
 - `bm.commands`: thin command orchestration and user-facing output
-- `bm.store`: safe path resolution, entry traversal, snapshots, and filesystem mutations
-- `bm.io`: front matter parsing/rendering and atomic file replacement
+- `bm.store`: safe normalized/exact paths, entry traversal, snapshots, and filesystem mutations
+- `bm.paths`: path syntax, reserved namespaces, filename rules, and literal prefix matching
+- `bm.io`: tolerant front matter parsing with optional diagnostics, rendering, and atomic persistence
 - `bm.query`: immutable filter values and list/search row logic
-- `bm.netscape`: Netscape HTML import/export conversion
-- `bm.backup`: versioned exact-content backups and restore preflight
-- `bm.doctor`: read-only bookmark health diagnostics
-- `bm.dedupe`: pure duplicate selection and merge rules
+- `bm.netscape`: pure Netscape HTML import/export conversion
+- `bm.importing`: best-effort browser-import execution and structured counts
+- `bm.exporting`: browser/pipeline serializers that write to explicit streams
+- `bm.backup`: versioned exact-content backups, stream output, and restore preflight/execution
+- `bm.doctor`: read-only bookmark health diagnostics using the same parser and path rules
+- `bm.dedupe`: pure merge rules, typed preview plans, and conflict-aware execution
+- `bm.urls`: shared URL inspection; each operation retains its own accept/preserve/open policy
+- `bm.git` and `bm.editor`: hardened Git execution/diagnostics and platform-specific editor launching
 
 Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.
 
@@ -369,6 +383,11 @@ bm dedupe [--dry-run] [--json]
 
 - `--dry-run` prints the planned merges without modifying files
 - `--json` emits a machine-readable summary of the merge actions
+
+Dedupe is not a whole-store transaction. A late conflict or I/O failure can leave earlier
+merges/deletions applied; the error makes this explicit and retains the failure status.
+Inspect the store and rerun `bm dedupe --dry-run` before retrying. Do not assume that a
+failed command rolled back previous groups or completed every planned deletion.
 
 URL normalization for duplicate detection:
 
@@ -667,6 +686,11 @@ These instructions cover Bash and Zsh, not PowerShell.
 - **Crash durability**: files are flushed and fsynced before replacement; containing-directory fsync is best-effort because platform/filesystem support varies. Atomic visibility and crash durability are separate guarantees.
 - **No-clobber creation/moves**: no-force add/import publish a fully written temp file with an atomic hard link, and no-force moves use link-then-unlink. Existing destinations are never overwritten; a crash during creation can leave a harmless temporary hard-link name, while a crash during a move can leave both source and destination names. Both states are safe to reconcile on retry. Filesystems without hard-link support fail rather than falling back to replacement.
 - **Path safety**: `..`, absolute paths, and paths that resolve outside the store are rejected. As with the optimistic content checks above, portable path validation cannot eliminate every race against a malicious process that concurrently rewrites filesystem links.
+- **URL policies**: capture preserves user-entered URLs; browser import rejects malformed or
+  unsupported URLs. Exact backup restore checks supported schemes but preserves malformed
+  hosts/ports for recovery; `doctor` diagnoses those structural problems. Opening remains
+  scheme-gated, with `--allow-scheme` as an explicit override. URL inspection does not
+  normalize saved URLs, stable IDs, or dedupe keys.
 - **No network by default**: `bm` never fetches content (future hooks can)
 - **Git**: pushes only if an upstream is configured and Git commands are bounded/non-interactive
 

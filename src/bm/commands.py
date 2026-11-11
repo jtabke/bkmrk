@@ -1,6 +1,5 @@
 """Command implementations for the bookmark manager."""
 
-import io
 import json
 import os
 import re
@@ -9,32 +8,29 @@ import sys
 import tempfile
 import textwrap
 import webbrowser
-from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
-from urllib.parse import urlparse
+from typing import List, TextIO, Tuple
 
-from .backup import apply_restore, build_backup, plan_restore, read_backup
-from .dedupe import _merge_entry_group, _select_survivor
-from .doctor import DoctorReport, inspect_store
-from .errors import BmError, NotFoundError, UnsafePathError
-from .io import atomic_create, build_text, load_entry, parse_front_matter
+from .backup import apply_restore, plan_restore, read_backup, write_backup
+from .dedupe import DedupePlan, apply_dedupe, plan_dedupe
+from .doctor import inspect_store
+from .editor import launch_editor
+from .errors import BmError, NotFoundError
+from .exporting import write_json, write_netscape
+from .git import inspect_git, run_git
+from .importing import ImportCounts, import_netscape
+from .io import atomic_text_create, build_text, load_entry, parse_front_matter
 from .models import FILE_EXT, default_store
-from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_document
+from .paths import normalize_slug, reject_unsafe
 from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, search_rows
 from .store import Store
+from .urls import ALLOWED_URL_SCHEMES, inspect_url
 from .utils import (
-    _launch_editor,
-    _reject_unsafe,
     create_slug_from_url,
     iso_now,
-    normalize_slug,
-    normalize_url_for_compare,
     parse_iso,
     rid,
 )
-
-ALLOWED_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps", "mailto"})
 
 _PROGRESS_EVERY = 500
 
@@ -77,7 +73,7 @@ def cmd_init(args) -> None:
         if (store.root / ".git").exists():
             print("Git repo already exists.")
         else:
-            _run_git(store.root, "init")
+            run_git(store.root, "init")
             print("Initialized git repository.")
     readme = store.root / "README.txt"
     if not readme.exists():
@@ -122,9 +118,9 @@ def cmd_add(args) -> None:
     url = _add_url(args.url)
     slug = args.id or create_slug_from_url(url)
     if args.path:
-        folder = normalize_slug(_reject_unsafe(args.path))
-        slug = f"{folder}/{normalize_slug(_reject_unsafe(slug))}"
-    slug = _reject_unsafe(slug)
+        folder = normalize_slug(reject_unsafe(args.path))
+        slug = f"{folder}/{normalize_slug(reject_unsafe(slug))}"
+    slug = reject_unsafe(slug)
     fpath = store.path_for(slug)
     if fpath.exists() and not args.force:
         raise BmError(f"bookmark exists: {slug} (use --force to overwrite)")
@@ -147,7 +143,7 @@ def cmd_add(args) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(template)
-            _launch_editor(tmp)
+            launch_editor(tmp)
             meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
         finally:
             try:
@@ -180,12 +176,7 @@ def cmd_add(args) -> None:
 def cmd_show(args) -> None:
     """Show a bookmark entry."""
     store = _store_from_args(args)
-    p = store.resolve(args.id)
-    if not p:
-        raise NotFoundError(
-            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
-            "to find an ID or path"
-        )
+    p = store.require_entry(args.id)
     rel = p.relative_to(store.root).with_suffix("")
     print(f"# {rel.as_posix()}")
     meta, body = load_entry(p)
@@ -202,12 +193,7 @@ def cmd_show(args) -> None:
 def cmd_open(args) -> None:
     """Open bookmark in browser."""
     store = _store_from_args(args)
-    p = store.resolve(args.id)
-    if not p:
-        raise NotFoundError(
-            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
-            "to find an ID or path"
-        )
+    p = store.require_entry(args.id)
     meta, _ = load_entry(p)
     _open_url(meta.get("url", ""), allow_scheme=getattr(args, "allow_scheme", False))
 
@@ -216,7 +202,10 @@ def _open_url(url: str, *, allow_scheme: bool = False) -> None:
     """Share the safe browser-launch boundary with interactive selection."""
     if not url:
         raise BmError("no url in entry")
-    scheme = (urlparse(url).scheme or "").lower()
+    inspection = inspect_url(url)
+    if inspection.problem and not inspection.scheme:
+        raise BmError(f"invalid URL: {inspection.problem}", exit_code=2)
+    scheme = inspection.scheme
     if scheme not in ALLOWED_URL_SCHEMES and not allow_scheme:
         raise BmError(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
     ok = webbrowser.open(url)
@@ -403,12 +392,7 @@ def cmd_pick(args) -> None:
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
     store = _store_from_args(args)
-    p = store.resolve(args.id)
-    if not p:
-        raise NotFoundError(
-            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
-            "to find an ID or path"
-        )
+    p = store.require_entry(args.id)
 
     original = store.snapshot(p)
     fd, tmp_name = tempfile.mkstemp(
@@ -420,7 +404,7 @@ def cmd_edit(args) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(original)
-        _launch_editor(tmp)
+        launch_editor(tmp)
         edited = tmp.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_front_matter(edited)
         if not meta.get("url"):
@@ -437,12 +421,7 @@ def cmd_edit(args) -> None:
 def cmd_rm(args) -> None:
     """Remove bookmark."""
     store = _store_from_args(args)
-    p = store.resolve(args.id)
-    if not p:
-        raise NotFoundError(
-            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
-            "to find an ID or path"
-        )
+    p = store.require_entry(args.id)
     store.delete(p, expected=store.snapshot(p))
 
 
@@ -494,88 +473,18 @@ def cmd_dirs(args) -> None:
             print(d)
 
 
-def _group_entries_by_url(store: Store) -> Dict[str, List[Dict[str, Any]]]:
-    buckets: Dict[str, List[Dict[str, Any]]] = {}
-    n = 0
-
-    for entry in store.iter_entries(snapshot=True, on_error=_warn_skipped):
-        url = entry.meta.get("url", "").strip()
-        key = normalize_url_for_compare(url)
-        if not key:
-            continue
-        buckets.setdefault(key, []).append(
-            {
-                "path": entry.path,
-                "rel": entry.relative_path,
-                "meta": dict(entry.meta),
-                "body": entry.body,
-                "snapshot": entry.snapshot,
-            }
+def _apply_dedupe_with_guidance(store: Store, plan: DedupePlan) -> None:
+    """Preserve failure types/statuses while making possible partial progress explicit."""
+    try:
+        apply_dedupe(store, plan)
+    except (OSError, BmError) as exc:
+        message = (
+            f"dedupe stopped: {exc}; earlier changes may have been applied. "
+            "Inspect the store and rerun 'bm dedupe --dry-run' before retrying."
         )
-        n += 1
-        _progress_tick("dedupe scanning", n)
-    _progress_done("dedupe scanning", n)
-    return buckets
-
-
-def _write_merged_entry(
-    store: Store,
-    survivor: Dict[str, Any],
-    merged_meta: Dict[str, Any],
-    merged_body: str,
-    tags: List[str],
-) -> None:
-    merged_meta_for_write = dict(merged_meta)
-    merged_meta_for_write["tags"] = tags
-    if not merged_meta_for_write.get("modified"):
-        merged_meta_for_write["modified"] = iso_now()
-    data = build_text(merged_meta_for_write, merged_body)
-    store.write(survivor["path"], data, expected=survivor["snapshot"])
-    survivor["meta"] = merged_meta_for_write
-    survivor["body"] = merged_body
-    survivor["snapshot"] = data.encode("utf-8")
-
-
-def _process_duplicate_group(
-    store: Store, canonical: str, group: List[Dict[str, Any]], dry_run: bool
-) -> Dict[str, Any]:
-    survivor = _select_survivor(group)
-    (
-        merged_meta,
-        merged_body,
-        tags,
-        notes_appended,
-        earliest_created,
-        latest_modified,
-    ) = _merge_entry_group(group, survivor)
-
-    removed_entries = [entry for entry in group if entry is not survivor]
-    action: Dict[str, Any] = {
-        "canonical_url": canonical,
-        "kept": survivor["rel"].as_posix(),
-        "removed": [entry["rel"].as_posix() for entry in removed_entries],
-        "tags": tags,
-        "notes_appended": notes_appended,
-        "total": len(group),
-    }
-
-    if earliest_created:
-        action["created"] = earliest_created.isoformat()
-    if latest_modified:
-        action["latest_modified"] = latest_modified.isoformat()
-    if dry_run:
-        action["dry_run"] = True
-        return action
-
-    # Validate the complete scan snapshot before changing any member. Each
-    # subsequent mutation repeats its own precondition check, so a redundant
-    # entry changed after this pass is reported rather than silently deleted.
-    for entry in group:
-        store.verify(entry["path"], entry["snapshot"])
-    _write_merged_entry(store, survivor, merged_meta, merged_body, tags)
-    for entry in removed_entries:
-        store.delete(entry["path"], expected=entry["snapshot"])
-    return action
+        if isinstance(exc, BmError):
+            raise type(exc)(message, exit_code=exc.exit_code) from exc
+        raise BmError(message, exit_code=2) from exc
 
 
 def cmd_dedupe(args) -> None:
@@ -583,14 +492,16 @@ def cmd_dedupe(args) -> None:
     store = _store_from_args(args)
     store.require_exists(f"store not found: {store.root}")
 
-    buckets = _group_entries_by_url(store)
+    plan = plan_dedupe(
+        store,
+        on_error=_warn_skipped,
+        on_progress=lambda count: _progress_tick("dedupe scanning", count),
+    )
+    _progress_done("dedupe scanning", plan.scanned)
     dry_run = bool(getattr(args, "dry_run", False))
-    actions = []
-
-    for canonical, group in buckets.items():
-        if len(group) < 2:
-            continue
-        actions.append(_process_duplicate_group(store, canonical, group, dry_run))
+    if not dry_run:
+        _apply_dedupe_with_guidance(store, plan)
+    actions = [group.document(dry_run=dry_run) for group in plan.groups]
 
     if args.json:
         print(json.dumps(actions, ensure_ascii=False))
@@ -616,14 +527,10 @@ def cmd_dedupe(args) -> None:
 def cmd_tag(args) -> None:
     """Add or remove tags."""
     store = _store_from_args(args)
-    p = store.resolve(args.id)
-    if not p:
-        raise NotFoundError(
-            f"bookmark not found: {args.id!r}; use 'bm search <terms>' or 'bm list' "
-            "to find an ID or path"
-        )
-    original = store.snapshot(p)
-    meta, body = load_entry(p)
+    p = store.require_entry(args.id)
+    entry = store.read_entry(p, snapshot=True)
+    original = entry.snapshot
+    meta, body = dict(entry.meta), entry.body
     cur = set(meta.get("tags", []))
     if args.action == "add":
         cur.update([t.strip() for t in args.tags if t.strip()])
@@ -634,78 +541,33 @@ def cmd_tag(args) -> None:
     store.write(p, build_text(meta, body), expected=original)
 
 
-def _export_row(rel, meta) -> Dict[str, Any]:
-    return {
-        "path": rel.as_posix(),
-        "url": meta.get("url", ""),
-        "title": meta.get("title", ""),
-        "tags": meta.get("tags", []),
-        "created": meta.get("created", ""),
-        "modified": meta.get("modified", ""),
-    }
-
-
-def _export_netscape(store: Store, filters: FilterSpec) -> None:
-    entries = []
-    for entry in store.iter_entries(
-        meta_only=True, path_prefix=filters.path, on_error=_warn_skipped
-    ):
-        if not passes_filters(entry.relative_path, entry.meta, filters):
-            continue
-        entries.append((entry.relative_path.as_posix(), entry.meta))
-    html_body = build_netscape_tree(entries)
-    sys.stdout.write(NETSCAPE_HEADER + html_body + NETSCAPE_FOOTER)
-
-
-def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
-    entries = store.iter_entries(meta_only=True, path_prefix=filters.path, on_error=_warn_skipped)
-    if jsonl:
-        # Stream NDJSON one row at a time; output is unsorted.
-        for entry in entries:
-            if not passes_filters(entry.relative_path, entry.meta, filters):
-                continue
-            sys.stdout.write(
-                json.dumps(_export_row(entry.relative_path, entry.meta), ensure_ascii=False) + "\n"
-            )
-        return
-    rows = []
-    for entry in entries:
-        if not passes_filters(entry.relative_path, entry.meta, filters):
-            continue
-        rows.append(_export_row(entry.relative_path, entry.meta))
-    rows.sort(key=lambda r: r["path"])
-    print(json.dumps(rows, ensure_ascii=False))
-
-
 def cmd_export(args) -> None:
     """Export to stdout or safely publish a completed file in any format."""
     store = _store_from_args(args)
     output = getattr(args, "output", None)
     if output is None:
-        _render_export(args, store)
+        _render_export(args, store, sys.stdout)
         return
-    buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        _render_export(args, store)
     try:
-        atomic_create(Path(output), buffer.getvalue().encode("utf-8"))
+        with atomic_text_create(Path(output)) as stream:
+            _render_export(args, store, stream)
     except FileExistsError as exc:
         raise BmError(f"output already exists: {output}; choose a new output filename") from exc
 
 
-def _render_export(args, store: Store) -> None:
-    """Retain streaming stdout behavior when no output file is requested."""
+def _render_export(args, store: Store, stream: TextIO) -> None:
+    """Serialize directly into a supplied stream, without redirecting global stdout."""
     if args.fmt is None:
-        sys.stdout.write(build_backup(store))
+        write_backup(store, stream)
         return
     filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":
-        _export_netscape(store, filters)
+        write_netscape(store, filters, stream, on_error=_warn_skipped)
     elif args.fmt == "json":
         jsonl = vars(args).get("jsonl", False)
         if not isinstance(jsonl, bool):
             raise BmError("--jsonl must be a boolean", exit_code=2)
-        _export_json(store, filters, jsonl)
+        write_json(store, filters, stream, jsonl=jsonl, on_error=_warn_skipped)
     else:
         raise BmError("unknown export format")
 
@@ -733,15 +595,6 @@ def _import_backup(args, store: Store, text: str) -> None:
         print(plan.summary(preview=False))
 
 
-def _check_import_root(store: Store) -> None:
-    """Do not preview a store whose root or ancestors cannot be directories."""
-    for parent in (store.root, *store.root.parents):
-        if (parent.exists() or parent.is_symlink()) and not parent.is_dir():
-            raise BmError(
-                f"store path is blocked by a non-directory: {parent}; choose another --store path"
-            )
-
-
 def cmd_import(args) -> None:
     """Recognize a lossless JSON backup or import Netscape HTML."""
     store = _store_from_args(args)
@@ -755,7 +608,7 @@ def cmd_import(args) -> None:
         raise NotFoundError(f"import file not found: {args.file}") from exc
     if not raw.strip():
         raise BmError("import input is empty; provide a backup or browser export")
-    _check_import_root(store)
+    store.check_root()
     text = raw.decode("utf-8-sig", errors="replace")
     if text.lstrip().startswith(("{", "[")) or Path(args.file).suffix.lower() in {
         ".json",
@@ -767,233 +620,36 @@ def cmd_import(args) -> None:
             raise BmError("backup must be valid UTF-8") from exc
         _import_backup(args, store, text)
         return
-    _import_netscape(args, store, text)
-
-
-def _check_import_destination(store: Store, path: Path) -> None:
-    """Reject blocked or linked destinations identically in previews and writes."""
-    current = store.root
-    for part in path.relative_to(store.root).parts:
-        current = current / part
-        if current.is_symlink():
-            raise UnsafePathError(f"symlink in import destination: {current}")
-        if not current.exists():
-            continue
-        if current == path:
-            if not current.is_file():
-                raise UnsafePathError(f"destination is not a regular file: {current}")
-        elif not current.is_dir():
-            raise UnsafePathError(f"parent is not a directory: {current}")
-
-
-def _netscape_import_path(
-    store: Store, folder: str, meta: dict, counts: dict[str, int]
-) -> Path | None:
-    """Validate a browser record and retain diagnostic counts for previews."""
-    try:
-        parsed = urlparse(meta.get("url", ""))
-        scheme = parsed.scheme.lower()
-        if scheme not in ALLOWED_URL_SCHEMES:
-            counts["invalid_scheme"] += 1
-            return None
-        if scheme == "mailto":
-            if not parsed.path:
-                raise ValueError("missing mail address")
-        elif not parsed.hostname:
-            raise ValueError("missing URL host")
-        _ = parsed.port
-        slug = create_slug_from_url(meta["url"])
-    except ValueError as exc:
-        counts["invalid_url"] += 1
-        print(f"bm: skipped invalid import URL: {exc}", file=sys.stderr)
-        return None
-    full_path = f"{folder}/{slug}" if folder else slug
-    try:
-        destination = store.path_for(full_path)
-        _check_import_destination(store, destination)
-        return destination
-    except UnsafePathError as exc:
-        print(f"bm: skipped import path {full_path!r}: {exc}", file=sys.stderr)
-        counts["unsafe"] += 1
-        return None
-
-
-def _import_netscape(args, store: Store, text: str) -> None:
-    """Import browser data, retaining the existing best-effort behavior."""
-    dry_run = getattr(args, "dry_run", False)
-    entries, missing_href = parse_netscape_document(text, default_created=iso_now())
-    counts = dict(
-        added=0,
-        replaced=0,
-        skipped_existing=0,
-        invalid_scheme=0,
-        invalid_url=0,
-        unsafe=0,
-        missing_href=missing_href,
+    counts = import_netscape(
+        store,
+        text,
+        force=args.force,
+        dry_run=getattr(args, "dry_run", False),
+        on_warning=lambda message: print(f"bm: {message}", file=sys.stderr),
+        on_progress=lambda count: _progress_tick("import", count),
     )
-    if not dry_run:
-        store.create()
-    seen_paths: set[Path] = set()
-    for folder, meta in entries:
-        fpath = _netscape_import_path(store, folder, meta, counts)
-        if fpath is None:
-            continue
-        exists = fpath.exists() or fpath in seen_paths
-        if exists and not args.force:
-            counts["skipped_existing"] += 1
-            continue
-        if not dry_run:
-            try:
-                if args.force:
-                    store.write(fpath, build_text(meta, ""))
-                else:
-                    store.create_entry(fpath, build_text(meta, ""))
-            except FileExistsError:
-                counts["skipped_existing"] += 1
-                continue
-        seen_paths.add(fpath)
-        counts["replaced" if exists else "added"] += 1
-        if not dry_run:
-            _progress_tick("import", counts["added"] + counts["replaced"])
-    if not dry_run:
-        _progress_done("import", counts["added"] + counts["replaced"])
-    _report_netscape_import(counts, dry_run)
+    if not getattr(args, "dry_run", False):
+        _progress_done("import", counts.added + counts.replaced)
+    _report_netscape_import(counts, getattr(args, "dry_run", False))
 
 
-def _report_netscape_import(counts: dict[str, int], dry_run: bool) -> None:
+def _report_netscape_import(counts: ImportCounts, dry_run: bool) -> None:
     """Keep browser import diagnostics and preview output together."""
     for key, label in (
         ("invalid_scheme", "disallowed URL scheme"),
         ("unsafe", "unsafe folder paths"),
         ("missing_href", "missing URL attributes"),
     ):
-        if counts[key]:
-            print(f"bm: skipped {counts[key]} entries with {label}", file=sys.stderr)
+        count = getattr(counts, key)
+        if count:
+            print(f"bm: skipped {count} entries with {label}", file=sys.stderr)
     if dry_run:
-        invalid = sum(
-            counts[key] for key in ("invalid_scheme", "invalid_url", "unsafe", "missing_href")
-        )
         print(
-            f"Would add {counts['added']}, replace {counts['replaced']}, "
-            f"skip existing {counts['skipped_existing']}; invalid {invalid}.\nNo files written."
+            f"Would add {counts.added}, replace {counts.replaced}, "
+            f"skip existing {counts.skipped_existing}; invalid {counts.invalid}.\nNo files written."
         )
     else:
         print("import ok")
-
-
-# Neutralize store-local `.git/config` keys that can run arbitrary commands
-# (CVE-2022-39253 family: core.fsmonitor / core.sshCommand / core.hooksPath).
-# `-c` overrides win after the per-repo config is read.
-_GIT_HARDENED_PREFIX = (
-    "git",
-    "-c",
-    "core.fsmonitor=",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.sshCommand=",
-    "-c",
-    "credential.helper=",
-    "-c",
-    "protocol.file.allow=user",
-)
-_GIT_TIMEOUT_SECONDS = 30
-
-
-def _git_cmd(*args: str) -> List[str]:
-    return [*_GIT_HARDENED_PREFIX, *args]
-
-
-def _run_git(
-    store: Path,
-    *args: str,
-    check: bool = True,
-    capture_output: bool = False,
-) -> subprocess.CompletedProcess:
-    """Run a hardened, bounded, non-interactive Git command.
-
-    All Git subprocesses go through this seam so repository-local configuration
-    cannot re-enable command execution and network operations cannot wait
-    forever for credentials or a remote response.
-    """
-    command = _git_cmd(*args)
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        result = subprocess.run(
-            command,
-            cwd=store,
-            check=check,
-            capture_output=capture_output,
-            text=capture_output,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            env=env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BmError(
-            f"git command timed out after {_GIT_TIMEOUT_SECONDS}s: {' '.join(command)}",
-            exit_code=124,
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise BmError(
-            f"git command failed ({' '.join(command)}): exit {exc.returncode}",
-            exit_code=exc.returncode or 1,
-        ) from exc
-    except OSError as exc:
-        raise BmError(f"git command failed ({' '.join(command)}): {exc}", exit_code=2) from exc
-
-    # ``check=True`` guarantees this for the real subprocess implementation;
-    # retaining the explicit check keeps the seam deterministic for callers
-    # that provide a subprocess test double.
-    if check and result.returncode:
-        raise BmError(
-            f"git command failed ({' '.join(command)}): exit {result.returncode}",
-            exit_code=result.returncode or 1,
-        )
-    return result
-
-
-def _doctor_git(store: Store, report: DoctorReport) -> None:
-    """Check local Git discovery, HEAD shape, and locks without status/index writes."""
-    marker = store.root / ".git"
-    if marker.is_symlink():
-        report.add(
-            "git_symlink",
-            [".git"],
-            "Git metadata is a symlink and was not inspected.",
-            "Inspect the link manually before running Git commands.",
-        )
-        return
-    if not marker.exists():
-        return
-    try:
-        result = _run_git(store.root, "rev-parse", "--absolute-git-dir", capture_output=True)
-        git_dir = Path(result.stdout.strip())
-        head = git_dir / "HEAD"
-        if head.is_symlink():
-            raise BmError("Git HEAD is a symlink")
-        text = head.read_text(encoding="utf-8").strip()
-        if text.startswith("ref: "):
-            _run_git(store.root, "check-ref-format", text[5:], capture_output=True)
-        elif not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", text):
-            raise BmError("Git HEAD is malformed")
-        for name in ("index.lock", "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock"):
-            path = git_dir / name
-            if path.exists() or path.is_symlink():
-                report.add(
-                    "git_lock",
-                    [f".git/{name}"],
-                    "Git lock file is present.",
-                    "Check for active Git processes before considering manual lock removal.",
-                    warning=True,
-                )
-    except (BmError, OSError, UnicodeError) as exc:
-        report.add(
-            "git_problem",
-            [".git"],
-            str(exc),
-            "Inspect Git metadata/configuration manually; doctor never changes it.",
-        )
 
 
 def cmd_doctor(args) -> None:
@@ -1001,7 +657,7 @@ def cmd_doctor(args) -> None:
     store = _store_from_args(args)
     report = inspect_store(store, ALLOWED_URL_SCHEMES)
     if store.exists():
-        _doctor_git(store, report)
+        inspect_git(store, report)
     document = report.document()
     if args.json:
         print(json.dumps(document, ensure_ascii=False))
@@ -1026,11 +682,11 @@ def cmd_sync(args) -> None:
     if not (store.root / ".git").exists():
         raise BmError("store is not a git repo; run: bm init --git", exit_code=2)
 
-    _run_git(store.root, "add", "-A")
-    _run_git(store.root, "commit", "-m", "bm sync", "--allow-empty")
+    run_git(store.root, "add", "-A")
+    run_git(store.root, "commit", "-m", "bm sync", "--allow-empty")
     # A nonzero rev-parse means no upstream is configured; it is expected and
     # should not be reported as a sync failure.
-    upstream = _run_git(
+    upstream = run_git(
         store.root,
         "rev-parse",
         "--abbrev-ref",
@@ -1040,4 +696,4 @@ def cmd_sync(args) -> None:
         capture_output=True,
     )
     if upstream.returncode == 0:
-        _run_git(store.root, "push")
+        run_git(store.root, "push")

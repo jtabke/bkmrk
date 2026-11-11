@@ -1,19 +1,20 @@
 """Portable regressions for Windows bookmark paths and interchange contracts."""
 
 import json
+import sys
 from pathlib import PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
 
 from bm.cli import main
-from bm.commands import _export_netscape, _export_row
 from bm.dedupe import _collect_body_parts, _entry_score
 from bm.errors import UnsafePathError
+from bm.exporting import export_row, write_netscape
 from bm.netscape import parse_netscape_html
-from bm.query import FilterSpec, _build_row, _matches_path
-from bm.store import Store
-from bm.utils import id_to_path
+from bm.paths import id_to_path, matches_path_prefix
+from bm.query import FilterSpec, _build_row
+from bm.store import Store, StoreEntry
 
 
 @pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
@@ -21,14 +22,14 @@ def test_logical_paths_use_forward_slashes(path_type):
     rel = path_type("dev/python/example")
     meta = {"url": "https://example.com"}
 
-    assert _matches_path(rel, "dev/python")
-    assert _matches_path(rel, r"dev\python")
-    assert _matches_path(rel, "dev")
-    assert not _matches_path(rel, "de")
-    assert not _matches_path(rel, "dev/py")
-    assert _matches_path(path_type("dev/python"), "dev/python")
+    assert matches_path_prefix(rel, "dev/python")
+    assert matches_path_prefix(rel, r"dev\python")
+    assert matches_path_prefix(rel, "dev")
+    assert not matches_path_prefix(rel, "de")
+    assert not matches_path_prefix(rel, "dev/py")
+    assert matches_path_prefix(path_type("dev/python"), "dev/python")
     assert _build_row(rel, meta)["path"] == "dev/python/example"
-    assert _export_row(rel, meta)["path"] == "dev/python/example"
+    assert export_row(rel, meta)["path"] == "dev/python/example"
 
 
 @pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
@@ -39,7 +40,7 @@ def test_netscape_export_retains_nested_folders(path_type, capsys):
     )
     store = SimpleNamespace(iter_entries=lambda **kwargs: iter([entry]))
 
-    _export_netscape(store, FilterSpec(path="dev/python"))
+    write_netscape(store, FilterSpec(path="dev/python"), sys.stdout)
 
     entries = parse_netscape_html(capsys.readouterr().out)
     assert len(entries) == 1
@@ -49,8 +50,12 @@ def test_netscape_export_retains_nested_folders(path_type, capsys):
 
 @pytest.mark.parametrize("path_type", [PurePosixPath, PureWindowsPath])
 def test_dedupe_uses_logical_paths_in_scores_and_notes(path_type):
-    survivor = {"rel": path_type("dev/python/first"), "meta": {}, "body": "longer note"}
-    duplicate = {"rel": path_type("dev/python/second"), "meta": {}, "body": "note"}
+    survivor = StoreEntry(
+        path_type("dev/python/first.bm"), path_type("dev/python/first"), {}, "longer note"
+    )
+    duplicate = StoreEntry(
+        path_type("dev/python/second.bm"), path_type("dev/python/second"), {}, "note"
+    )
 
     assert _entry_score(survivor)[3] == "dev/python/first"
     parts, appended = _collect_body_parts([survivor, duplicate], survivor)

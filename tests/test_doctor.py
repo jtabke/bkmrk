@@ -239,7 +239,7 @@ def test_invalid_git_head_reported(git_store, capsys):
 
 
 def test_git_unavailable_is_a_structured_finding(git_store, capsys):
-    with patch("bm.commands.subprocess.run", side_effect=FileNotFoundError("git unavailable")):
+    with patch("bm.git.subprocess.run", side_effect=FileNotFoundError("git unavailable")):
         status, document = report(git_store, capsys)
     assert status == 1
     assert document["findings"][0]["code"] == "git_problem"
@@ -254,7 +254,7 @@ def test_symlink_git_marker_is_not_followed(tmp_path, capsys):
         (store / ".git").symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks unavailable")
-    with patch("bm.commands._run_git") as git:
+    with patch("bm.git.run_git") as git:
         status, document = report(store, capsys)
     git.assert_not_called()
     assert status == 1

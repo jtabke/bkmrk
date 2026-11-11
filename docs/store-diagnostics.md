@@ -37,6 +37,8 @@ proof of data loss or permission to delete anything.
 
 `checked` counts regular bookmark candidates attempted, including those that fail content
 or path validation. Symlinks and other non-regular files are not counted as checked.
+Legacy bookmarks inside reserved `.git` namespaces are reported separately without
+parsing their contents and are not included in `checked`.
 Paths within findings are sorted; findings are sorted by paths and then code. Single-file
 findings and grouped duplicate findings use the same `paths` array. Git metadata paths
 are shown logically under `.git`, including for linked worktrees.
@@ -62,6 +64,7 @@ filesystem tools; do not overwrite your last known-good backup.
 | `duplicate_id` | Multiple usable URLs have the same URL-derived stable ID. Compare paths, metadata, and notes before deciding which file to keep. |
 | `duplicate_url` | URLs are equivalent under the existing dedupe normalization rules. Review `bm dedupe --dry-run`; merging is a separate, explicit action. |
 | `unsafe_or_unreadable_path` | A bookmark path is unsafe, non-regular, a symlink, or cannot be read. Inspect permissions/links manually. No symlink targets are intentionally inspected. |
+| `reserved_bookmark_path` | A legacy `.bm` file is inside a `.git` namespace. Backup fails rather than silently omitting it. Preserve a copy and relocate it manually outside Git metadata; normal bookmark commands reject this namespace. |
 | `symlink_directory` | A directory link was skipped. Inspect its target manually; doctor does not descend into it. |
 | `unreadable_directory` | A directory could not be enumerated. Fix access only if authorized, then rerun doctor. |
 | `temporary_file` | A `.tmp` or `.edit` file may be left by an interrupted write/editor. First check for an active writer, then compare its content with the bookmark. |
@@ -75,6 +78,11 @@ Duplicate stable IDs and normalized URLs are separate diagnostics: two identical
 produce both; HTTP/HTTPS or fragment variants can share a normalized URL without sharing
 a stable ID. Unknown metadata and properly formed block scalars are accepted. Doctor is
 not a general YAML validator: `.bm` retains its existing small front-matter grammar.
+Header diagnostics come from the same tolerant parser used by normal commands, so block
+scalars, duplicate keys, and malformed lines have one interpretation. Ordinary tag lists
+keep backslashes literal; the explicit `tags: json:[...]` form supports escaped strings.
+Malformed marked arrays are reported as `invalid_front_matter`, and their text is retained
+as a tag by tolerant reads rather than silently discarded.
 
 Git checks accept a healthy unborn repository. They check local discovery (including
 configuration parsing), HEAD's symbolic-ref/hash shape, and the presence of common

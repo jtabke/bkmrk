@@ -1,5 +1,9 @@
 # Architecture hardening plan
 
+This is the historical delivery plan for the original hardening work. Its completed
+groups and baseline describe that implementation, not a new commit/review workflow.
+For the current module boundaries, see [README architecture](../README.md#architecture).
+
 ## Objective
 
 Improve bm's data safety, failure handling, testability, and module boundaries without changing its plain-text format, stdlib-only runtime, CLI compatibility, or single-filesystem-backend design.
@@ -142,7 +146,7 @@ signal rather than as a transaction guarantee.
 - README claims match implemented behavior.
 - Final full validation passes on Python 3.8-compatible syntax.
 
-## Final architecture
+## Original architecture at completion
 
 The completed implementation has these concrete seams:
 

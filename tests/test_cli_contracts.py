@@ -162,7 +162,7 @@ def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
     token = bookmark.relative_to(store).with_suffix("").as_posix()
     original = bookmark.read_bytes()
 
-    with patch("bm.commands._launch_editor", side_effect=OSError("editor failed")):
+    with patch("bm.commands.launch_editor", side_effect=OSError("editor failed")):
         assert _run(store, "edit", token) == 2
     assert capsys.readouterr().err == "bm: OSError: editor failed\n"
     assert bookmark.read_bytes() == original
@@ -171,7 +171,7 @@ def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
         del path
         bookmark.write_bytes(original + b"\nexternal change\n")
 
-    with patch("bm.commands._launch_editor", side_effect=edit_and_change_original):
+    with patch("bm.commands.launch_editor", side_effect=edit_and_change_original):
         assert _run(store, "edit", token) == 1
     assert "changed since it was read" in capsys.readouterr().err
     assert bookmark.read_bytes() == original + b"\nexternal change\n"
@@ -210,7 +210,7 @@ def test_real_cli_maps_git_failure(tmp_path, capsys):
     store = tmp_path / "store"
     failure = subprocess.CalledProcessError(7, ["git", "init"])
 
-    with patch("bm.commands.subprocess.run", side_effect=failure):
+    with patch("bm.git.subprocess.run", side_effect=failure):
         assert _run(store, "init", "--git") == 7
 
     captured = capsys.readouterr()

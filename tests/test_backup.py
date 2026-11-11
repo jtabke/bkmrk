@@ -247,7 +247,7 @@ def test_export_is_sorted_and_excludes_non_bookmark_files(tmp_path):
         (store / name).write_bytes(CONTENT.encode())
     (store / "README.txt").write_text("not a bookmark")
     (store / ".git").mkdir()
-    (store / ".git" / "ignored.bm").write_bytes(b"not a bookmark")
+    (store / ".git" / "config").write_bytes(b"not a bookmark")
     document = json.loads(build_backup(Store(store)))
     assert [entry["path"] for entry in document["entries"]] == ["a.bm", "z.bm"]
 

@@ -9,8 +9,8 @@ from unittest.mock import Mock
 import pytest
 
 from bm.cli import main
+from bm.editor import _call_windows_editor, _split_editor_command, launch_editor
 from bm.io import load_entry
-from bm.utils import _call_windows_editor, _launch_editor, _split_editor_command
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="uses the Windows command-line parser")
@@ -32,9 +32,9 @@ def test_empty_or_nul_editor_commands_fail(tmp_path, monkeypatch, command):
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.setenv("EDITOR", command)
     call = Mock()
-    monkeypatch.setattr("bm.utils.subprocess.call", call)
+    monkeypatch.setattr("bm.editor.subprocess.call", call)
     with pytest.raises(OSError, match="empty|NUL"):
-        _launch_editor(tmp_path / "entry.bm")
+        launch_editor(tmp_path / "entry.bm")
     call.assert_not_called()
 
 
@@ -48,12 +48,12 @@ def test_default_editor_is_native_and_waited_for(tmp_path, monkeypatch, platform
     monkeypatch.delenv("EDITOR", raising=False)
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr("bm.utils.shutil.which", lambda name: None)
+    monkeypatch.setattr("bm.editor.shutil.which", lambda name: None)
     call = Mock(return_value=0)
-    monkeypatch.setattr("bm.utils.subprocess.call", call)
+    monkeypatch.setattr("bm.editor.subprocess.call", call)
     path = tmp_path / "entry.bm"
 
-    _launch_editor(path)
+    launch_editor(path)
 
     call.assert_called_once_with([expected, str(path)], shell=False)
 
@@ -61,22 +61,34 @@ def test_default_editor_is_native_and_waited_for(tmp_path, monkeypatch, platform
 def test_visual_takes_precedence_over_editor(tmp_path, monkeypatch):
     monkeypatch.setenv("VISUAL", "visual-editor --wait")
     monkeypatch.setenv("EDITOR", "other-editor")
-    monkeypatch.setattr("bm.utils.shutil.which", lambda name: None)
+    monkeypatch.setattr("bm.editor.shutil.which", lambda name: None)
     call = Mock(return_value=0)
-    monkeypatch.setattr("bm.utils.subprocess.call", call)
+    monkeypatch.setattr("bm.editor.subprocess.call", call)
     path = tmp_path / "entry.bm"
-    _launch_editor(path)
+    launch_editor(path)
     call.assert_called_once_with(["visual-editor", "--wait", str(path)], shell=False)
 
 
 @pytest.mark.parametrize("unsafe", ['quote"', "%PATH%", "!variable!", "line\nbreak", "line\rbreak"])
 def test_batch_editor_refuses_expandable_or_unquotable_arguments(monkeypatch, unsafe):
-    monkeypatch.setattr("bm.utils.shutil.which", lambda name: None)
+    monkeypatch.setattr("bm.editor.shutil.which", lambda name: None)
     call = Mock()
-    monkeypatch.setattr("bm.utils.subprocess.call", call)
+    monkeypatch.setattr("bm.editor.subprocess.call", call)
     with pytest.raises(OSError, match="use a native .exe editor"):
         _call_windows_editor(["code.cmd", "--wait", unsafe])
     call.assert_not_called()
+
+
+class TestLaunchEditor:
+    """Test editor process failure handling."""
+
+    def test_nonzero_exit_is_reported(self, tmp_path, monkeypatch):
+        """A failed editor must prevent callers from committing its output."""
+        monkeypatch.setenv("EDITOR", "fake-editor")
+        monkeypatch.setattr("bm.editor.subprocess.call", lambda *args, **kwargs: 7)
+
+        with pytest.raises(OSError, match="status 7"):
+            launch_editor(tmp_path / "bookmark.bm")
 
 
 def _editor_script(directory: Path, *, fail: bool = False) -> Path:
