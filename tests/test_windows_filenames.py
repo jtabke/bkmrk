@@ -32,6 +32,9 @@ from bm.paths import id_to_path, reject_windows_names
         "folder:stream/entry.bm",
         'folder"/entry.bm',
         "folder\x01/entry.bm",
+        r"folder\NUL\entry.bm",
+        r"folder\con .bm",
+        r"folder.\entry.bm",
     ],
 )
 def test_unsupported_windows_components_have_clear_diagnostics(name):
@@ -40,7 +43,19 @@ def test_unsupported_windows_components_have_clear_diagnostics(name):
 
 
 @pytest.mark.parametrize(
-    "name", ["dev/example.bm", "conifer.bm", "auxiliary.bm", "com10.bm", ".notes/é.bm"]
+    "name",
+    [
+        "dev/example.bm",
+        "conifer.bm",
+        "auxiliary.bm",
+        "com10.bm",
+        ".notes/é.bm",
+        "folder with spaces/entry.bm",
+        "X.bm",
+        "CONX.bm",
+        "CON\u00a0.bm",
+        r"dev\example.bm",
+    ],
 )
 def test_ordinary_windows_names_are_allowed(name):
     reject_windows_names(name)

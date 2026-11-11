@@ -15,6 +15,7 @@ uv sync --locked --extra dev --extra build --python 3.15
 uv run --locked --extra dev pytest tests/test_capture.py
 uv run --locked --extra dev ruff check .
 uv run --locked --extra dev ruff format --check .
+uv run --locked --extra dev ty check
 uv run --locked --extra dev pytest
 uv run --locked python -m compileall src
 ```
@@ -30,6 +31,13 @@ The lockfile includes development/build tools; the runtime stays standard-librar
 Dependency resolution has a three-day release-age cooldown locally and in CI. Keep the
 pinned Ruff version in `pyproject.toml` and `prek.toml` synchronized when updating it.
 
+Type checking uses the pinned ty development dependency. Run `ty check` (with the uv
+prefix above) to check `src/bm`; tests are not yet included. The configured target is
+Python 3.12, the minimum supported version, independent of the active interpreter.
+Platform assumptions are disabled so checks include platform-specific code paths.
+CI runs the same check as a dedicated job. Update the ty pin and lockfile together,
+and review diagnostics when upgrading; do not add blanket suppressions.
+
 To run directly from the repository without installation, use `PYTHONPATH=src python -m bm --help`.
 In PowerShell, use `$env:PYTHONPATH = "src"; python -m bm --help`.
 
@@ -43,6 +51,12 @@ uv run --locked --extra build twine check --strict dist/*
 Smoke-test an installed wheel outside the checkout using a disposable store. Do not
 publish distributions as part of an ordinary change. The optional full hook audit is
 `prek run --all-files`; the installed commit hook currently runs pytest even for docs.
+
+To inspect untested branches without enforcing a percentage threshold:
+
+```sh
+uv run --locked --extra dev pytest --cov=bm --cov-branch --cov-report=term-missing:skip-covered
+```
 
 ## Safe local experiments
 
@@ -94,6 +108,13 @@ Keep tests with their feature owner rather than in chronological follow-up files
   `test_copy.py`: the copy command's behavior.
 - `test_open_workflows.py`: direct opening, terminal-gated selection, and fzf actions.
 - `test_importing.py` and `test_backup.py`: browser import and lossless backup/restore.
+
+Hypothesis properties live beside the existing examples in `test_io.py`,
+`test_paths.py`, and `test_backup.py`. They cover tag round-trips, stable slug
+normalization, contained destinations, and exact-content backup/restore. Keep generated
+inputs bounded and filesystem state fresh for every example (for example, use
+`TemporaryDirectory` inside the test, not a shared function-scoped pytest fixture).
+Keep health checks enabled and add explicit regression cases for discovered bugs.
 
 Pure query, path, serialization, and store tests remain beside their existing owners.
 Preserve assertions and parametrized cases when moving tests; use the shared fixtures

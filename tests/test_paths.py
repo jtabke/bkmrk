@@ -1,9 +1,55 @@
 """Bookmark path syntax and containment contracts."""
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from bm.errors import UnsafePathError
-from bm.paths import id_to_path, is_relative_to, normalize_slug, reject_unsafe
+from bm.paths import id_to_path, is_relative_to, is_reserved_path, normalize_slug, reject_unsafe
+
+
+@given(
+    value=st.one_of(
+        st.text(max_size=80),
+        st.text(alphabet="abAB01-/._ ", max_size=80),
+    )
+)
+@example(value="a/-/b")
+@example(value="-/-/a")
+def test_normalize_slug_is_idempotent(value):
+    normalized = normalize_slug(value)
+    assert normalize_slug(normalized) == normalized
+
+
+@given(
+    slug=st.one_of(
+        st.text(max_size=60),
+        st.text(alphabet="abcABC012-._/\\\\ :~", max_size=60),
+    )
+)
+def test_generated_bookmark_paths_stay_inside_store(slug):
+    # Each generated example gets its own root; no shared pytest fixture state.
+    with TemporaryDirectory() as directory:
+        root = Path(directory) / "store"
+        try:
+            path = id_to_path(root, slug)
+        except UnsafePathError:
+            return
+        relative = path.resolve().relative_to(root.resolve())
+        assert relative.parts
+        assert relative.suffix == ".bm"
+        assert all(part.casefold() != ".git" for part in relative.parts)
+        assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    "name", [r".git\config", r"nested\.GIT\hooks\entry", ".git/config", "nested/.GIT/hooks"]
+)
+def test_reserved_namespace_detection_handles_both_separators(name):
+    assert is_reserved_path(name)
 
 
 class TestNormalizeSlug:
@@ -13,6 +59,7 @@ class TestNormalizeSlug:
         """Should normalize basic strings."""
         assert normalize_slug("hello world") == "hello-world"
         assert normalize_slug("Hello/World") == "hello/world"
+        assert normalize_slug("-entry-") == "entry"
 
     def test_special_chars(self):
         """Should remove special characters."""
@@ -35,6 +82,13 @@ class TestNormalizeSlug:
         """Should trim leading and trailing slashes."""
         assert normalize_slug("/hello/world/") == "hello/world"
         assert normalize_slug("///hello///") == "hello"
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("a/-/b", "a/b"), ("-/-/a", "a"), ("a/-", "a"), ("-/-", "untitled")],
+    )
+    def test_drop_segments_empty_after_stripping_dashes(self, value, expected):
+        assert normalize_slug(value) == expected
 
     def test_reject_dot_dot(self):
         """Should reject paths with .."""

@@ -3,12 +3,17 @@
 import io
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
-from bm.backup import BACKUP_FORMAT, build_backup
+from bm.backup import BACKUP_FORMAT, apply_restore, build_backup, plan_restore, read_backup
 from bm.cli import main
+from bm.errors import BmError
 from bm.store import Store
+from bm.urls import ALLOWED_URL_SCHEMES
 
 CONTENT = (
     "---\r\n# Keep comments and ordering\r\nurl: https://example.com\r\n"
@@ -54,6 +59,53 @@ def test_exact_round_trip_and_repeat_import(tmp_path, capsys):
     assert run(destination, "import", str(output)) == 0
     assert "left unchanged 1" in capsys.readouterr().out
     assert build_backup(Store(destination)) == build_backup(Store(source))
+
+
+@given(
+    documents=st.lists(
+        st.tuples(st.sampled_from(["\n", "\r\n"]), st.text(max_size=256)),
+        min_size=1,
+        max_size=4,
+    )
+)
+def test_generated_backup_restore_preserves_exact_content(documents):
+    """Backups preserve UTF-8 bodies and line endings without reserialization."""
+    with TemporaryDirectory() as directory:
+        source = Store(Path(directory) / "source")
+        restored = Store(Path(directory) / "restored")
+        expected = {}
+        for index, (newline, body) in enumerate(documents):
+            name = f"folder-{index}/entry.bm"
+            header = newline.join(
+                [
+                    "---",
+                    "# Keep this comment",
+                    "url: https://example.com",
+                    "x-extra: kept",
+                    "---",
+                    "",
+                ]
+            )
+            content = (header + body).encode("utf-8")
+            source.create_entry(source.exact_path(name), content)
+            expected[name] = content
+
+        backup = build_backup(source)
+        records = read_backup(backup)
+        plan = plan_restore(restored, records, ALLOWED_URL_SCHEMES, force=False)
+        assert not restored.root.exists()
+        assert not plan.conflicts
+        apply_restore(restored, plan)
+        assert {
+            path.relative_to(restored.root).as_posix(): path.read_bytes()
+            for path in restored.root.rglob("*.bm")
+        } == expected
+        assert build_backup(restored) == backup
+
+        repeated = plan_restore(restored, records, ALLOWED_URL_SCHEMES, force=False)
+        assert repeated.unchanged == len(expected)
+        assert not repeated.items
+        assert not repeated.conflicts
 
 
 def test_default_stdout_and_empty_store(tmp_path, capsys):
@@ -217,6 +269,30 @@ def test_force_detects_changed_destination(tmp_path, monkeypatch, capsys):
     assert "earlier files may have been written" in capsys.readouterr().err
 
 
+def test_restore_preflight_honors_restricted_schemes(tmp_path):
+    store = Store(tmp_path / "store")
+    entries = [{"path": "entry.bm", "content": CONTENT}]
+    with pytest.raises(BmError, match="missing or unsupported URL scheme.*entry.bm"):
+        plan_restore(store, entries, frozenset({"http"}), force=False)
+    assert not store.root.exists()
+
+
+def test_apply_restore_refuses_conflicts_before_writing_any_items(tmp_path):
+    store = Store(tmp_path / "store")
+    store.create_entry(store.exact_path("existing.bm"), b"original")
+    entries = [
+        {"path": "new.bm", "content": CONTENT},
+        {"path": "existing.bm", "content": CONTENT},
+    ]
+    plan = plan_restore(store, entries, ALLOWED_URL_SCHEMES, force=False)
+    assert len(plan.items) == 1
+    assert plan.conflicts == ("existing.bm",)
+    with pytest.raises(BmError, match="^restore has unresolved conflicts$"):
+        apply_restore(store, plan)
+    assert not (store.root / "new.bm").exists()
+    assert (store.root / "existing.bm").read_bytes() == b"original"
+
+
 def test_create_race_does_not_clobber(tmp_path, monkeypatch):
     source = archive(tmp_path)
     store = tmp_path / "store"
@@ -251,6 +327,23 @@ def test_export_is_sorted_and_excludes_non_bookmark_files(tmp_path):
     (store / ".git" / "config").write_bytes(b"not a bookmark")
     document = json.loads(build_backup(Store(store)))
     assert [entry["path"] for entry in document["entries"]] == ["a.bm", "z.bm"]
+
+
+@pytest.mark.parametrize("metadata_path", [".git", ".git/objects"])
+def test_export_ignores_linked_git_metadata_without_traversing_it(tmp_path, metadata_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    outside = tmp_path / "git-metadata"
+    outside.mkdir()
+    (outside / "private.bm").write_bytes(b"not a bookmark")
+    link = store / metadata_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable")
+    assert read_backup(build_backup(Store(store))) == []
+    assert (outside / "private.bm").read_bytes() == b"not a bookmark"
 
 
 def test_export_invalid_utf8_leaves_no_output(tmp_path, capsys):

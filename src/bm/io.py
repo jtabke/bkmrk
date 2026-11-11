@@ -5,7 +5,7 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from io import TextIOWrapper
 from pathlib import Path
@@ -310,13 +310,15 @@ def _fsync_directory(path: Path) -> None:
 def _write_temp(fd: int, data: str | bytes) -> None:
     """Write and fsync a temporary file before publishing it."""
     if isinstance(data, bytes):
-        stream = os.fdopen(fd, "wb")
+        with os.fdopen(fd, "wb") as binary_stream:
+            binary_stream.write(data)
+            binary_stream.flush()
+            os.fsync(binary_stream.fileno())
     else:
-        stream = os.fdopen(fd, "w", encoding="utf-8")
-    with stream as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
+        with os.fdopen(fd, "w", encoding="utf-8") as text_stream:
+            text_stream.write(data)
+            text_stream.flush()
+            os.fsync(text_stream.fileno())
 
 
 def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None) -> None:
@@ -356,7 +358,7 @@ def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None
 
 
 @contextmanager
-def atomic_text_create(path: Path) -> Iterator[TextIOWrapper]:
+def atomic_text_create(path: Path) -> Generator[TextIOWrapper, None, None]:
     """Stream UTF-8 to a temporary file, then publish complete content without clobbering.
 
     A failed serializer or publication leaves no partial destination. Hard-link
