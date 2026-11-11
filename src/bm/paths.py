@@ -17,8 +17,8 @@ def normalize_slug(s: str) -> str:
     s = re.sub(r"-{2,}", "-", s)
     s = s.strip("-")
     if "/" in s:
-        parts = [p.strip("-") for p in s.split("/") if p]
-        s = "/".join(parts)
+        parts = [p.strip("-") for p in s.split("/")]
+        s = "/".join(part for part in parts if part)
     return s or "untitled"
 
 

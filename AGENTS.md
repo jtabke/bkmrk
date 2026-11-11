@@ -19,6 +19,7 @@ Commands:
 - Syntax compilation: `python3 -m compileall src` (not package generation).
 - Full tests: `pytest`.
 - Full lint/format check: `ruff check .` and `ruff format --check .`.
+- Type check: `uv run --locked --extra dev ty check` (checks `src/bm`, targeting Python 3.12).
 - Scoped formatting: `ruff format <intended-files>`.
 - Explicit full hook audit: `prek run --all-files`; do not make it the default for every edit. The installed commit hook currently runs pytest unconditionally, including documentation commits.
 

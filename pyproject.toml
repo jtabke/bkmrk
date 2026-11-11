@@ -24,11 +24,13 @@ completion = [
 dev = [
     "argcomplete>=3",
     "commitizen",
+    "hypothesis>=6",
     "mutmut",
     "prek",
     "pytest-cov",
     "pytest>=9.2",
     "ruff==0.17.4",
+    "ty==0.0.99",
 ]
 build = [
     "build",
@@ -58,6 +60,13 @@ ignore = ["E501"]  # line too long, handled by formatter
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.ty.environment]
+python-version = "3.12"
+python-platform = "all"
+
+[tool.ty.src]
+include = ["src/bm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

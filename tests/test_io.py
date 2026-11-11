@@ -1,8 +1,13 @@
 """Unit tests for bm.io module."""
 
+from contextlib import contextmanager
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from bm.io import (
     ConcurrentModificationError,
@@ -44,6 +49,14 @@ def test_tag_round_trip(tag):
     assert body == "notes"
 
 
+@given(tags=st.lists(st.text(max_size=64), max_size=12))
+def test_generated_tags_round_trip(tags):
+    """Generated tags retain their order, duplicates, whitespace, and Unicode."""
+    meta, body = parse_front_matter(build_text({"tags": tags}, "notes"))
+    assert meta["tags"] == tags
+    assert body == "notes"
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -61,6 +74,10 @@ def test_tag_round_trip(tag):
             [r"\\server\new folder", "trailing\\", "plain"],
         ),
         ('["quoted", unquoted]', ["quoted", "unquoted"]),
+        ("[one,two", ["[one", "two"]),
+        ("one,two]", ["one", "two]"]),
+        ("[Xfirst, second]", ["Xfirst", "second"]),
+        ("[first,  'comma,tag']", ["first", "comma,tag"]),
     ],
 )
 def test_legacy_tag_forms_remain_readable(text, expected):
@@ -102,6 +119,100 @@ def test_invalid_encoded_tags_are_diagnosed_and_retained(value):
     assert meta["tags"] == [value]
     rewritten, _ = parse_front_matter(build_text(meta, ""))
     assert rewritten["tags"] == [value]
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("notes", ["  Xnote\nsecond", "Xylophone\nsecond"])
+def test_legacy_url_body_preserves_indentation_and_multiple_lines(scheme, notes):
+    meta, body = parse_front_matter(f"{scheme}://example.com\n\n{notes}\n")
+    assert meta["url"] == f"{scheme}://example.com"
+    assert body == notes
+
+
+@pytest.mark.parametrize("body", ["  indented\n", "\tindented\n", "Xylophone\n"])
+def test_front_matter_body_preserves_leading_non_newline_characters(body):
+    _, parsed = parse_front_matter("---\nurl: https://example.com\n---\n\n" + body)
+    assert parsed == body
+
+
+@pytest.mark.parametrize("notes", ["  first\n\n\n  second\n", ""])
+def test_block_scalar_preserves_multiple_blanks_and_allows_empty_value(notes):
+    meta, _ = parse_front_matter(f"---\nnotes: |\n{notes}title: next field\n---\n")
+    assert meta["notes"] == ("first\n\n\nsecond" if notes else "")
+    assert meta["title"] == "next field"
+
+
+def test_header_ignores_comments_and_blank_lines_after_fields():
+    meta, body = parse_front_matter(
+        "---\nurl: https://example.com\n# first\n\n# second\ntitle: kept\n---\nnotes"
+    )
+    assert meta == {"url": "https://example.com", "title": "kept", "tags": []}
+    assert body == "notes"
+
+
+def test_invalid_header_line_is_diagnosed_without_becoming_metadata():
+    diagnostics = []
+    meta, _ = parse_front_matter("---\nnot a field\ntitle: valid\n---\n", diagnostics=diagnostics)
+    assert meta == {"title": "valid", "tags": []}
+    assert diagnostics == ["Invalid front-matter line: 'not a field'."]
+
+
+@pytest.mark.parametrize("front_matter", [False, True])
+@pytest.mark.parametrize("meta_only", [False, True])
+def test_load_entry_replaces_invalid_utf8(tmp_path, front_matter, meta_only):
+    path = tmp_path / "entry.bm"
+    text = (
+        b"---\nurl: https://example.com\ntitle: damaged\xff\n---\nnotes\xff"
+        if front_matter
+        else b"https://example.com/\xff\nnotes\xff"
+    )
+    path.write_bytes(text)
+    meta, body = load_entry(path, meta_only=meta_only)
+    if front_matter:
+        assert meta["title"] == "damaged\ufffd"
+    else:
+        assert meta["url"] == "https://example.com/\ufffd"
+    assert body == ("" if meta_only else "notes\ufffd")
+
+
+def test_load_entry_uses_utf8_independent_of_locale(tmp_path, monkeypatch):
+    path = tmp_path / "entry.bm"
+    path.write_bytes("---\nurl: https://example.com\n---\ncafé".encode("utf-8"))
+    read_text = Path.read_text
+
+    def ascii_default_read_text(path, encoding=None, errors=None):
+        return read_text(path, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", ascii_default_read_text)
+    assert load_entry(path)[1] == "café"
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_metadata_only_reader_stops_at_exact_closing_marker(tmp_path, monkeypatch, newline):
+    import bm.io as io_mod
+
+    header = newline.join([b"---", b"--- ", b"---X", b"url: https://example.com", b"---", b""])
+
+    @contextmanager
+    def guarded_open(path, mode):
+        assert path == tmp_path / "entry.bm"
+        assert mode == "rb"
+        with BytesIO(header + b"body that must not be read") as stream:
+            yield stream
+            assert stream.tell() == len(header)
+
+    monkeypatch.setattr(io_mod, "open", guarded_open, raising=False)
+    assert io_mod._read_meta_only(tmp_path / "entry.bm") == header.decode("utf-8")
+
+
+@pytest.mark.parametrize("opening", [b"--- \n", b"---X\n"])
+def test_metadata_only_reader_does_not_accept_lookalike_opening(tmp_path, opening):
+    from bm.io import _read_meta_only
+
+    path = tmp_path / "entry.bm"
+    content = opening + b"url: https://example.com\n---\nnotes"
+    path.write_bytes(content)
+    assert _read_meta_only(path) == content.decode("utf-8")
 
 
 def test_block_scalar_keys_are_not_duplicate_header_fields():
@@ -575,7 +686,8 @@ tags: ["tag,with,comma", normal]
 
         io_mod._fsync_directory(tmp_path)
 
-        open_directory.assert_called_once()
+        flags = io_mod.os.O_RDONLY | getattr(io_mod.os, "O_DIRECTORY", 0)
+        open_directory.assert_called_once_with(tmp_path, flags)
         fsync.assert_called_once_with(123)
         close.assert_called_once_with(123)
 
@@ -657,6 +769,27 @@ class TestFmtTag:
 class TestBuildText:
     """Test build_text function."""
 
+    def test_known_fields_use_canonical_order_before_unknown_metadata(self):
+        meta = {
+            "x-extra": "kept",
+            "notes": "note",
+            "modified": "2025-02-03",
+            "created": "2025-01-02",
+            "tags": ["tag"],
+            "title": "Title",
+            "url": "https://example.com",
+        }
+        lines = build_text(meta, "").splitlines()
+        assert [line.split(":", 1)[0] for line in lines[1:-1]] == [
+            "url",
+            "title",
+            "tags",
+            "created",
+            "modified",
+            "notes",
+            "x-extra",
+        ]
+
     def test_basic(self):
         """Should build text with front matter."""
         meta = {"url": "https://example.com", "title": "Example"}
@@ -712,9 +845,52 @@ class TestAtomicWrite:
     def test_write(self, tmp_path):
         """Should write data atomically."""
         fpath = tmp_path / "test.bm"
-        data = "test content"
+        data = "Unicode café\nwith a second line\n"
         atomic_write(fpath, data)
-        assert fpath.read_text() == data
+        assert fpath.read_text(encoding="utf-8") == data
+
+    def test_write_bytes(self, tmp_path):
+        """Binary writes must preserve arbitrary bytes and line endings exactly."""
+        fpath = tmp_path / "test.bm"
+        data = b"\xff\x00\r\nraw\nbytes\r"
+        atomic_write(fpath, data)
+        assert fpath.read_bytes() == data
+
+    def test_text_write_uses_utf8_independent_of_locale(self, tmp_path, monkeypatch):
+        import bm.io as io_mod
+
+        fdopen = io_mod.os.fdopen
+
+        def ascii_default_fdopen(fd, mode, encoding=None):
+            return fdopen(fd, mode, encoding=encoding or "ascii")
+
+        monkeypatch.setattr(io_mod.os, "fdopen", ascii_default_fdopen)
+        destination = tmp_path / "entry.bm"
+        atomic_write(destination, "café")
+        assert destination.read_bytes() == "café".encode("utf-8")
+
+    def test_replacement_uses_same_directory_temporary_file(self, tmp_path, monkeypatch):
+        """Replacement must not cross filesystems or expose a partial destination."""
+        import bm.io as io_mod
+
+        destination = tmp_path / "entry.bm"
+        destination.write_bytes(b"original")
+        replace = io_mod.os.replace
+        replacements = []
+
+        def check_replace(source, target):
+            source = Path(source)
+            assert source.parent == destination.parent
+            assert source.read_bytes() == b"replacement"
+            assert destination.read_bytes() == b"original"
+            replacements.append(source)
+            replace(source, target)
+
+        monkeypatch.setattr(io_mod.os, "replace", check_replace)
+        atomic_write(destination, b"replacement")
+        assert len(replacements) == 1
+        assert destination.read_bytes() == b"replacement"
+        assert list(tmp_path.iterdir()) == [destination]
 
     def test_atomic(self, tmp_path):
         """Should not leave partial files on failure."""

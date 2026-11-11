@@ -75,6 +75,7 @@ class _NetscapeParser(HTMLParser):
 
     def _finish_bookmark(self) -> None:
         bookmark = self._bookmark
+        assert bookmark is not None
         self._bookmark = None
         url = bookmark["url"]
         if url is None:
