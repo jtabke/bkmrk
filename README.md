@@ -83,7 +83,8 @@ Most bookmark tools are databases or browser‑locked. `bm` chooses **text first
 
 ## Install
 
-Requires Python >=3.8. Install from PyPI:
+Requires Python >=3.12. The next release drops support for Python 3.8–3.11;
+users on those versions should stay on an older compatible release. Install from PyPI:
 
 ```bash
 pip install bkmrk
@@ -120,7 +121,7 @@ python -m pip install -e '.[dev]'
 Or with uv:
 
 ```bash
-uv pip install -e '.[dev]'
+uv sync --locked --extra dev
 ```
 
 Prefer running straight from the repository without installation? Point Python at
@@ -490,7 +491,7 @@ Windows notes:
 
 - Bookmark paths accept `/` or `\\` separators on every platform. Commands and JSON/Netscape exports use `/` for consistent logical paths; store and import-file locations remain native filesystem paths.
 - Absolute, drive-qualified (including `C:relative`), and parent-traversal bookmark paths are rejected before normalization.
-- CI runs the full test suite on Windows with Python 3.12, alongside Linux with Python 3.8 and 3.12.
+- CI runs the full test suite on Linux, macOS, and Windows with Python 3.12 (the minimum) and 3.15.
 - Normalized bookmark filenames are checked for reserved device names (such as `CON`, `NUL`, and `COM1`) and unsupported components on Windows. Invalid imported folder paths are reported and skipped; valid entries still import. Existing POSIX filenames and URL-derived bookmark IDs are unchanged.
 - The default Windows editor is Notepad. Set `VISUAL` or `EDITOR` to an executable and arguments, using Windows double quotes around paths with spaces. Use the editor's blocking mode (for example, `$env:EDITOR = 'code.cmd --wait'`) so editing finishes before `bm` saves the result. `VISUAL` takes precedence over `EDITOR`.
 - Windows `.cmd`/`.bat` editor launchers are supported with quoted arguments and shell expansion disabled. Arguments or paths containing double quotes, `%`, `!`, or line breaks are rejected for batch launchers; use a native `.exe` editor for those paths. Native editor launches do not use a shell.
@@ -523,6 +524,23 @@ ruff format --check .
 # test suite
 python3 -m pytest -q
 ```
+
+For a reproducible development environment with uv:
+
+```bash
+uv sync --locked --extra dev --extra build --python 3.15
+uv run --locked --extra dev ruff check .
+uv run --locked --extra dev ruff format --check .
+uv run --locked --extra dev pytest
+uv build
+uv run --locked --extra build twine check --strict dist/*
+```
+
+The lockfile includes development and build tools; the runtime remains standard-library-only.
+The project applies a three-day release-age cooldown to dependency resolution in both local and CI runs.
+Keep the pinned Ruff version in `pyproject.toml` and `prek.toml` synchronized when updating it.
+CI checks package builds and metadata without publishing. Release publishing remains a separate,
+explicitly authorized action.
 
 ### Roadmap
 

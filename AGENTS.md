@@ -1,6 +1,6 @@
 # Agent Guide for bkmrk (`bm`)
 
-Plain-text bookmarks with a standard-library-only core and optional `argcomplete` completion. Python >=3.8; source is `src/bm/`, tests are `tests/`. Use [README](README.md) for CLI contracts and storage behavior; tooling/style configuration lives in `pyproject.toml` and `prek.toml`.
+Plain-text bookmarks with a standard-library-only core and optional `argcomplete` completion. Python >=3.12; source is `src/bm/`, tests are `tests/`. Use [README](README.md) for CLI contracts and storage behavior; tooling/style configuration lives in `pyproject.toml` and `prek.toml`.
 
 ## Implementation and store safety
 
