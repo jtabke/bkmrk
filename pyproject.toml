@@ -28,7 +28,7 @@ dev = [
     "prek",
     "pytest-cov",
     "pytest>=9.2",
-    "ruff==0.17.3",
+    "ruff==0.17.4",
 ]
 build = [
     "build",
