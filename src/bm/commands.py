@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, TextIO, Tuple
 
 from .backup import apply_restore, plan_restore, read_backup, write_backup
+from .clipboard import read_clipboard, write_clipboard
 from .dedupe import DedupePlan, apply_dedupe, plan_dedupe
 from .doctor import inspect_store
 from .editor import launch_editor
@@ -28,6 +29,7 @@ from .urls import ALLOWED_URL_SCHEMES, inspect_url
 from .utils import (
     create_slug_from_url,
     iso_now,
+    normalize_url_for_compare,
     parse_iso,
     rid,
 )
@@ -101,21 +103,61 @@ def cmd_init(args) -> None:
             pass
 
 
-def _add_url(value: str) -> str:
-    """Read stdin only when explicitly requested, accepting one URL rather than a batch."""
-    if value.strip() != "-":
-        return value.strip()
-    url = sys.stdin.read().strip()
+def _single_capture_url(text: str, source: str) -> str:
+    """Accept one copied/piped URL rather than a batch or arbitrary prose."""
+    url = text.strip()
     if not url or len(url.splitlines()) != 1 or any(char.isspace() for char in url):
-        raise BmError("stdin must contain exactly one non-empty URL, without whitespace")
+        raise BmError(f"{source} must contain exactly one non-empty URL, without whitespace")
     return url
+
+
+def _add_url(value: str | None, *, clipboard: bool = False) -> str:
+    """Read stdin or the clipboard only when explicitly requested."""
+    if clipboard:
+        url = _single_capture_url(read_clipboard(), "clipboard")
+        inspection = inspect_url(url)
+        if not inspection.supported or inspection.problem:
+            raise BmError("clipboard must contain a valid http, https, ftp, ftps, or mailto URL")
+        return url
+    if value is None:
+        raise BmError("provide a URL, - for stdin, or --clipboard", exit_code=2)
+    if value.strip() == "-":
+        return _single_capture_url(sys.stdin.read(), "stdin")
+    return value.strip()
+
+
+def _warn_existing_urls(store: Store, url: str, destination: Path) -> None:
+    """Report advisory matches after saving without redefining bookmark identity."""
+    try:
+        key = normalize_url_for_compare(url)
+    except ValueError:
+        return
+    if not key:
+        return
+    matches = []
+    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        if entry.path == destination:
+            continue
+        try:
+            existing_key = normalize_url_for_compare(entry.meta.get("url", ""))
+        except ValueError:
+            continue
+        if existing_key == key:
+            matches.append(entry.relative_path.as_posix())
+    for match in sorted(matches):
+        print(
+            f"bm: warning: equivalent URL already stored at {match!r}; "
+            "use 'bm show <path>' or 'bm open <path>' to inspect it. "
+            "Saved separately; existing bookmark left unchanged.",
+            file=sys.stderr,
+        )
 
 
 def cmd_add(args) -> None:
     """Add a new bookmark."""
     store = _store_from_args(args)
     store.require_exists(f"store not found: {store.root}. Run `bm init` first.")
-    url = _add_url(args.url)
+    url = _add_url(args.url, clipboard=getattr(args, "clipboard", False))
     slug = args.id or create_slug_from_url(url)
     if args.path:
         folder = normalize_slug(reject_unsafe(args.path))
@@ -170,6 +212,7 @@ def cmd_add(args) -> None:
             store.create_entry(fpath, build_text(meta, body))
     except FileExistsError as exc:
         raise BmError(f"bookmark exists: {slug} (use --force to overwrite)") from exc
+    _warn_existing_urls(store, meta.get("url", ""), fpath)
     print(rid(meta.get("url", "")))
 
 
@@ -191,11 +234,50 @@ def cmd_show(args) -> None:
 
 
 def cmd_open(args) -> None:
-    """Open bookmark in browser."""
+    """Resolve directly or select interactively, then open, copy, or print the URL."""
+    values = vars(args)
+    direct = args.id is not None
+    filtered = any(values.get(name) is not None for name in ("tag", "host", "path", "since"))
+    if direct and (values.get("query") is not None or filtered):
+        raise BmError(
+            "an ID/path cannot be combined with --search or selection filters", exit_code=2
+        )
+    if values.get("allow_scheme") and (
+        not direct or values.get("copy") or values.get("print_field")
+    ):
+        raise BmError(
+            "--allow-scheme requires direct ID/path opening, not selection/copy/print", exit_code=2
+        )
     store = _store_from_args(args)
-    p = store.require_entry(args.id)
-    meta, _ = load_entry(p)
-    _open_url(meta.get("url", ""), allow_scheme=getattr(args, "allow_scheme", False))
+    if direct:
+        meta, _ = load_entry(store.require_entry(args.id), meta_only=True)
+        url = meta.get("url", "")
+    else:
+        url = _select_open_row(store, args)["url"]
+    if not url:
+        raise BmError("no url in entry")
+    if values.get("copy"):
+        _copy_url(url)
+    elif values.get("print_field"):
+        print(rid(url) if args.print_field == "id" else url)
+    else:
+        _open_url(url, allow_scheme=values.get("allow_scheme", False))
+
+
+def cmd_copy(args) -> None:
+    """Copy only the stored URL without launching a browser or changing the store."""
+    store = _store_from_args(args)
+    meta, _ = load_entry(store.require_entry(args.id), meta_only=True)
+    url = meta.get("url", "")
+    _copy_url(url)
+
+
+def _copy_url(url: str) -> None:
+    """Share explicit clipboard output between direct lookup and interactive selection."""
+    if not url:
+        raise BmError("no url in entry")
+    write_clipboard(url)
+    print("Copied URL to clipboard.", file=sys.stderr)
 
 
 def _open_url(url: str, *, allow_scheme: bool = False) -> None:
@@ -207,7 +289,10 @@ def _open_url(url: str, *, allow_scheme: bool = False) -> None:
         raise BmError(f"invalid URL: {inspection.problem}", exit_code=2)
     scheme = inspection.scheme
     if scheme not in ALLOWED_URL_SCHEMES and not allow_scheme:
-        raise BmError(f"refusing to open {scheme!r} URL (use --allow-scheme to override): {url}")
+        raise BmError(
+            f"refusing to open {scheme!r} URL "
+            f"(use 'bm open <ID|path> --allow-scheme' to override intentionally): {url}"
+        )
     ok = webbrowser.open(url)
     print(url)
     if not ok:
@@ -362,7 +447,11 @@ def _pick_row(rows: List[dict]) -> dict:
             check=False,
         )
     except FileNotFoundError as exc:
-        raise BmError("fzf is not installed; install fzf to use 'bm pick'", exit_code=2) from exc
+        raise BmError(
+            "fzf is not installed; install fzf for interactive 'bm open', "
+            "or provide an ID/path to open directly",
+            exit_code=2,
+        ) from exc
     except OSError as exc:
         raise BmError(f"could not start fzf: {exc}", exit_code=2) from exc
     if result.returncode in (1, 130):
@@ -375,18 +464,25 @@ def _pick_row(rows: List[dict]) -> dict:
     return choices[selection]
 
 
-def cmd_pick(args) -> None:
-    """Filter bookmarks and let optional fzf select one without modifying the store."""
-    store = _store_from_args(args)
+def _select_open_row(store: Store, args) -> dict:
+    """Select one filtered bookmark only when input and UI output are terminals."""
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        raise BmError(
+            "interactive selection requires a terminal on stdin and stderr; "
+            "provide an ID/path or use 'bm search <terms> --json' in scripts",
+            exit_code=2,
+        )
     store.require_exists(f"store not found: {store.root}; check --store or run 'bm init'")
-    rows = _collect_rows(store, _filter_spec_from_args(args))
+    filters = _filter_spec_from_args(args)
+    query = getattr(args, "query", None) or ""
+    rows = (
+        search_rows(_search_entries(store, filters, SEARCH_FIELDS), query, SEARCH_FIELDS, False)
+        if query.strip()
+        else _collect_rows(store, filters)
+    )
     if not rows:
-        raise BmError("no bookmarks match; use 'bm list' or adjust the filters")
-    selected = _pick_row(rows)
-    if args.print_field:
-        print(selected[args.print_field])
-    else:
-        _open_url(selected["url"])
+        raise BmError("no bookmarks match; use 'bm list' or adjust the search terms/filters")
+    return _pick_row(rows)
 
 
 def cmd_edit(args) -> None:

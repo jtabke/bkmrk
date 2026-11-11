@@ -182,7 +182,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.set_defaults(func="cmd_init")
 
     p = sp.add_parser("add", help="Add a bookmark")
-    p.add_argument("url", help="URL, or - to read exactly one URL from stdin")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("url", nargs="?", help="URL, or - to read exactly one URL from stdin")
+    source.add_argument("--clipboard", action="store_true", help="Read one URL from the clipboard")
     p.add_argument("-n", "--name", help="Title")
     p.add_argument("-t", "--tags", help="Comma-separated tags")
     p.add_argument("-d", "--description", help="Notes / description")
@@ -196,14 +198,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("id", help="Stable ID or path/slug")
     p.set_defaults(func="cmd_show")
 
-    p = sp.add_parser("open", help="Open in browser")
-    p.add_argument("id", help="Stable ID or path/slug")
+    p = sp.add_parser(
+        "open",
+        help="Open an ID/path directly, or select a bookmark using optional fzf",
+        description=(
+            "Open an ID/path directly. Without one, choose interactively using fzf. "
+            "Use --search 'terms' and filters to narrow the selection; no automatic "
+            "fallback from an unresolved ID/path to search."
+        ),
+    )
+    source = p.add_mutually_exclusive_group()
+    source.add_argument("id", nargs="?", help="Stable ID or path/slug (direct lookup)")
+    source.add_argument(
+        "--search",
+        dest="query",
+        metavar="QUERY",
+        help="Substring-AND search (quote multiple terms)",
+    )
+    _add_filter_flags(p)
+    action = p.add_mutually_exclusive_group()
+    action.add_argument(
+        "--print",
+        dest="print_field",
+        choices=["id", "url"],
+        help="Print the chosen ID or URL instead of opening a browser",
+    )
+    action.add_argument(
+        "--copy", action="store_true", help="Copy the chosen URL instead of opening"
+    )
     p.add_argument(
         "--allow-scheme",
         action="store_true",
-        help="Open URL even when its scheme is outside the safe allow-list",
+        help="Allow a nonstandard URL scheme (direct ID/path opening only)",
     )
     p.set_defaults(func="cmd_open")
+
+    p = sp.add_parser("copy", help="Copy a bookmark URL to the clipboard without opening it")
+    p.add_argument("id", help="Stable ID or path/slug")
+    p.set_defaults(func="cmd_copy")
 
     p = sp.add_parser("list", help="List all entries")
     _add_filter_flags(p)
@@ -238,16 +270,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output.add_argument("--json", action="store_true", help="Emit JSON array")
     output.add_argument("--jsonl", action="store_true", help="Emit JSON Lines (NDJSON)")
     p.set_defaults(func="cmd_search")
-
-    p = sp.add_parser("pick", help="Select a bookmark using optional fzf (opens by default)")
-    _add_filter_flags(p)
-    p.add_argument(
-        "--print",
-        dest="print_field",
-        choices=["id", "url"],
-        help="Print the selected ID or URL instead of opening a browser",
-    )
-    p.set_defaults(func="cmd_pick")
 
     p = sp.add_parser("edit", help="Edit with $EDITOR / $VISUAL")
     p.add_argument("id")

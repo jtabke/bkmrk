@@ -1,6 +1,7 @@
 """Shared pytest fixtures for the bm test suite."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,34 @@ def store(tmp_path: Path) -> Path:
     s = tmp_path / "store"
     s.mkdir()
     return s
+
+
+@pytest.fixture
+def interactive_terminal(monkeypatch, capsys):
+    """Simulate terminal availability across pytest's capture-stream replacements."""
+    monkeypatch.setattr(type(sys.stdin), "isatty", lambda self: True)
+    monkeypatch.setattr(type(sys.stderr), "isatty", lambda self: True)
+
+
+@pytest.fixture
+def bookmark_factory():
+    """Return a CLI test entry factory that can target multiple disposable stores."""
+
+    def _make(
+        store: Path,
+        name: str = "guide.bm",
+        url: str = "https://example.com",
+        title: str = "Python async guide",
+    ) -> Path:
+        path = store / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"---\nurl: {url}\ntitle: {title}\ntags: [dev]\ncreated: 2025-01-01\n---\n",
+            encoding="utf-8",
+        )
+        return path
+
+    return _make
 
 
 @pytest.fixture

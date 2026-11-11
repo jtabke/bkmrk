@@ -229,3 +229,47 @@ def test_real_cli_import_missing_file_keeps_not_found_contract(tmp_path, capsys)
     captured = capsys.readouterr()
     assert captured.err == f"bm: import file not found: {missing}\n"
     assert captured.out == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["python", "--tag", "dev", "async", "--json"],
+        ["--tag", "dev", "python", "--json", "async"],
+        ["python", "--field", "title", "async", "--host", "example.com", "guide", "--json"],
+    ],
+)
+def test_interspersed_search(tmp_path, capsys, args, bookmark_factory):
+    store = tmp_path / "store"
+    bookmark_factory(store)
+    assert _run(store, "search", *args) == 0
+    assert json.loads(capsys.readouterr().out)[0]["path"] == "guide"
+
+
+def test_store_between_search_terms_and_last_store_wins(tmp_path, capsys, bookmark_factory):
+    store = tmp_path / "store"
+    bookmark_factory(store)
+    assert (
+        _run(tmp_path / "wrong", "search", "python", "--store", str(store), "async", "--json") == 0
+    )
+    assert len(json.loads(capsys.readouterr().out)) == 1
+
+
+def test_search_unknown_options_and_interspersed_regex_remain_errors(
+    tmp_path, capsys, bookmark_factory
+):
+    store = tmp_path / "store"
+    bookmark_factory(store)
+    assert _run(store, "search", "python", "--bogus", "async") == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+    assert _run(store, "search", "python", "--regex", "async") == 2
+    assert "quote patterns" in capsys.readouterr().err
+    assert _run(store, "list", "extra") == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_search_double_dash_after_options_retains_literal_terms(tmp_path, capsys, bookmark_factory):
+    store = tmp_path / "store"
+    bookmark_factory(store, title="python --literal")
+    assert _run(store, "search", "python", "--tag", "dev", "--", "--literal") == 0
+    assert "guide" in capsys.readouterr().out

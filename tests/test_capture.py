@@ -1,14 +1,22 @@
 """Command and workflow contracts for capture."""
 
 import argparse
+import io
 from unittest.mock import patch
 
 import pytest
 
+from bm.cli import main
 from bm.commands import (
     cmd_add,
 )
 from bm.errors import BmError, UnsafePathError
+from bm.io import load_entry
+from bm.utils import rid
+
+
+def run(store, *args):
+    return main(["--store", str(store), *args])
 
 
 class TestCmdAdd:
@@ -228,3 +236,120 @@ class TestCmdAdd:
         with pytest.raises(UnsafePathError):
             cmd_add(args)
         assert not list(store.glob("*.bm"))
+
+
+def test_add_explicit_stdin_url(tmp_path, monkeypatch, capsys):
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr("sys.stdin", io.StringIO("  https://example.com/日本語\n"))
+    assert run(store, "add", "-", "--name", "Example", "--tags", "dev") == 0
+    assert capsys.readouterr().out.strip() == rid("https://example.com/日本語")
+    meta, _ = load_entry(next(store.glob("*.bm")))
+    assert meta["url"] == "https://example.com/日本語"
+    assert meta["title"] == "Example" and meta["tags"] == ["dev"]
+
+
+@pytest.mark.parametrize(
+    "text", ["", "\n  ", "https://a.com\nhttps://b.com\n", "https://a.com has spaces"]
+)
+def test_invalid_stdin_url_does_not_create_bookmark(tmp_path, monkeypatch, capsys, text):
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr("sys.stdin", io.StringIO(text))
+    assert run(store, "add", "-") == 1
+    assert not list(store.iterdir())
+    assert "exactly one" in capsys.readouterr().err
+
+
+def test_ordinary_add_does_not_read_stdin(tmp_path, capsys):
+    store = tmp_path / "store"
+    store.mkdir()
+    # pytest's default stdin raises if read.
+    assert run(store, "add", "https://example.com") == 0
+    assert capsys.readouterr().out.strip()
+
+
+def test_add_clipboard_url_with_metadata(store, capsys):
+    url = "https://example.com/docs"
+    with (
+        patch("bm.commands.read_clipboard", return_value=f"  {url}\r\n") as clipboard,
+        patch("bm.commands.sys.stdin.read") as stdin,
+        patch("bm.commands.webbrowser.open") as browser,
+    ):
+        assert (
+            run(store, "add", "--clipboard", "--id", "docs", "--name", "Docs", "--tags", "dev") == 0
+        )
+    clipboard.assert_called_once_with()
+    stdin.assert_not_called()
+    browser.assert_not_called()
+    assert capsys.readouterr().out == rid(url) + "\n"
+    meta, _ = load_entry(store / "docs.bm")
+    assert (meta["url"], meta["title"], meta["tags"]) == (url, "Docs", ["dev"])
+
+
+@pytest.mark.parametrize(
+    "text", ["", " \n", "https://a.test\nhttps://b.test", "https://a.test some notes"]
+)
+def test_bad_clipboard_capture_does_not_write(store, capsys, text):
+    with patch("bm.commands.read_clipboard", return_value=text):
+        assert run(store, "add", "--clipboard") == 1
+    assert "clipboard must contain exactly one" in capsys.readouterr().err
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize("source", ["https://example.com", "-"])
+def test_clipboard_and_explicit_input_are_mutually_exclusive(store, capsys, source):
+    with patch("bm.commands.read_clipboard") as clipboard:
+        assert run(store, "add", source, "--clipboard") == 2
+    clipboard.assert_not_called()
+    assert "not allowed" in capsys.readouterr().err
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "private-token",
+        "javascript:alert(1)",
+        "https://",
+        "https://[broken",
+        "https://example.com:bad",
+    ],
+)
+def test_clipboard_requires_a_structurally_valid_supported_url(store, capsys, text):
+    with patch("bm.commands.read_clipboard", return_value=text):
+        assert run(store, "add", "--clipboard") == 1
+    assert "clipboard must contain a valid" in capsys.readouterr().err
+    assert not list(store.iterdir())
+
+
+def test_normal_add_never_reads_clipboard(store):
+    with patch("bm.commands.read_clipboard") as clipboard:
+        assert run(store, "add", "https://example.com", "--id", "normal") == 0
+    clipboard.assert_not_called()
+
+
+def test_missing_store_does_not_read_clipboard(tmp_path):
+    with patch("bm.commands.read_clipboard") as clipboard:
+        assert run(tmp_path / "missing", "add", "--clipboard") == 1
+    clipboard.assert_not_called()
+
+
+def test_clipboard_error_does_not_write(store, capsys):
+    with patch(
+        "bm.commands.read_clipboard", side_effect=BmError("clipboard unavailable", exit_code=2)
+    ):
+        assert run(store, "add", "--clipboard") == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "clipboard unavailable" in output.err
+    assert not list(store.iterdir())
+
+
+def test_clipboard_duplicate_still_warns_without_replacing(store, write_bm, capsys):
+    old = write_bm("original", url="https://example.com/docs", body="Keep")
+    before = old.read_bytes()
+    with patch("bm.commands.read_clipboard", return_value="http://www.example.com/docs/#part"):
+        assert run(store, "add", "--clipboard", "--id", "new") == 0
+    assert "equivalent URL already stored at 'original'" in capsys.readouterr().err
+    assert old.read_bytes() == before
