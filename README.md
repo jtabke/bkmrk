@@ -8,7 +8,7 @@ Each bookmark is a readable `.bm` file containing metadata and freeform notes.
 
 ```console
 $ bm init
-Initialized store at: /home/alex/.bookmarks.d
+Initialized store at: /path/to/your/home/.bookmarks.d
 
 $ bm add https://github.com/jtabke/bkmrk \
     --name "bkmrk on GitHub" \
@@ -20,6 +20,9 @@ f58e60347098
 $ bm search "source documentation"
 f58e60347098  tools/bkmrk — bkmrk on GitHub <https://github.com/jtabke/bkmrk>
 ```
+
+The initialization path above is illustrative; `bm` prints your actual home directory.
+Check the installed version with `bm --version`.
 
 The bookmark is just a file:
 
@@ -90,7 +93,13 @@ users on those versions should stay on an older compatible release. Install from
 pip install bkmrk
 ```
 
-Alternatively, using uv to install system-wide as a tool:
+For an isolated CLI installation with pipx:
+
+```bash
+pipx install bkmrk
+```
+
+Alternatively, using uv to install as a tool:
 
 ```bash
 uv tool install bkmrk
@@ -485,9 +494,43 @@ Run this script periodically or on demand to generate an up-to-date bookmark fil
 - **Store directory**: set `BOOKMARKS_DIR`, or place the global option before the command: `bm --store PATH <command>`
 - **Editor**: `VISUAL` or `EDITOR` (supports commands like `code --wait`)
 - **Debug**: set `BM_DEBUG=1` to re-raise unexpected exceptions with a full traceback (otherwise printed as a one-line `bm: <Type>: <msg>` to stderr with exit code 2)
-- **Shell completion**: install the `completion` extra (`pip install 'bkmrk[completion]'`) for [argcomplete](https://github.com/kislyuk/argcomplete). Then enable global completion (`activate-global-python-argcomplete`) or wire it per‑shell with `eval "$(register-python-argcomplete bm)"`.
 
-Windows notes:
+### Shell completion
+
+Completion is optional and uses [argcomplete](https://github.com/kislyuk/argcomplete).
+Install the extra with your chosen installer:
+
+```bash
+pip install 'bkmrk[completion]'
+# Or, for an isolated CLI installation:
+pipx install 'bkmrk[completion]'
+# Or:
+uv tool install 'bkmrk[completion]'
+```
+
+The registration helper must run in the same environment as `bm`. With pipx, expose
+its helper commands using `pipx install --include-deps 'bkmrk[completion]'` instead;
+with uv, use `uv tool install --with-executables-from argcomplete 'bkmrk[completion]'`.
+
+For Bash, add this to `~/.bashrc`:
+
+```bash
+eval "$(register-python-argcomplete --shell bash bm)"
+```
+
+For Zsh, add this to `~/.zshrc` (omit `compinit` if your configuration already runs it):
+
+```zsh
+autoload -Uz compinit
+compinit
+eval "$(register-python-argcomplete --shell zsh bm)"
+```
+
+Start a new shell (or reload its configuration), then type `bm se` and press Tab to
+complete `search`. This registers only `bm`; global completion activation is not required.
+These instructions cover Bash and Zsh, not PowerShell.
+
+### Windows notes
 
 - Bookmark paths accept `/` or `\\` separators on every platform. Commands and JSON/Netscape exports use `/` for consistent logical paths; store and import-file locations remain native filesystem paths.
 - Absolute, drive-qualified (including `C:relative`), and parent-traversal bookmark paths are rejected before normalization.
