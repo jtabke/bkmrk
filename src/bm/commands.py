@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
+from .backup import apply_restore, build_backup, plan_restore, read_backup
 from .dedupe import _merge_entry_group, _select_survivor
 from .errors import BmError, NotFoundError, UnsafePathError
-from .io import build_text, load_entry, parse_front_matter
+from .io import atomic_create, build_text, load_entry, parse_front_matter
 from .models import FILE_EXT, default_store
 from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree, parse_netscape_html
 from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, search_rows
@@ -565,6 +566,19 @@ def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
 def cmd_export(args) -> None:
     """Export bookmarks."""
     store = _store_from_args(args)
+    output = getattr(args, "output", None)
+    if output and args.fmt is not None:
+        raise BmError("--output is for complete backups; omit the format")
+    if args.fmt is None:
+        text = build_backup(store)
+        if output:
+            try:
+                atomic_create(Path(output), text.encode("utf-8"))
+            except FileExistsError as exc:
+                raise BmError(f"output already exists: {output}") from exc
+        else:
+            sys.stdout.write(text)
+        return
     filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":
         _export_netscape(store, filters)
@@ -577,18 +591,60 @@ def cmd_export(args) -> None:
         raise BmError("unknown export format")
 
 
+def _import_backup(args, store: Store, text: str) -> None:
+    """Preflight a complete backup and report conflicts before writing."""
+    plan = plan_restore(store, read_backup(text), ALLOWED_URL_SCHEMES, force=args.force)
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run or plan.conflicts:
+        print(plan.summary(preview=True))
+    if plan.conflicts:
+        details = "\n".join(f"  {name}" for name in plan.conflicts)
+        raise BmError(
+            f"{len(plan.conflicts)} conflicting paths:\n{details}\n"
+            "No files written. Use --force to replace conflicting files."
+        )
+    if not dry_run:
+        try:
+            apply_restore(store, plan)
+        except (OSError, BmError) as exc:
+            raise BmError(
+                f"restore stopped: {exc}; earlier files may have been written. "
+                "Inspect the store and retry."
+            ) from exc
+        print(plan.summary(preview=False))
+
+
 def cmd_import(args) -> None:
-    """Import bookmarks from Netscape HTML."""
+    """Recognize a lossless JSON backup or import Netscape HTML."""
     store = _store_from_args(args)
-    store.create()
     try:
-        text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        raw = Path(args.file).read_bytes()
     except FileNotFoundError as exc:
         raise NotFoundError(f"import file not found: {args.file}") from exc
+    text = raw.decode("utf-8-sig", errors="replace")
+    if text.lstrip().startswith(("{", "[")) or Path(args.file).suffix.lower() in {
+        ".json",
+        ".jsonl",
+    }:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeError as exc:
+            raise BmError("backup must be valid UTF-8") from exc
+        _import_backup(args, store, text)
+        return
+    _import_netscape(args, store, text)
+
+
+def _import_netscape(args, store: Store, text: str) -> None:
+    """Import browser data, retaining the existing best-effort behavior."""
+    dry_run = getattr(args, "dry_run", False)
+    if not dry_run:
+        store.create()
     entries = parse_netscape_html(text, default_created=iso_now())
     skipped_scheme = 0
     skipped_unsafe = 0
     written = 0
+    preview_paths: set[Path] = set()
     for path, meta in entries:
         scheme = (urlparse(meta.get("url", "")).scheme or "").lower()
         if scheme not in ALLOWED_URL_SCHEMES:
@@ -602,7 +658,11 @@ def cmd_import(args) -> None:
             print(f"bm: skipped import path {full_path!r}: {exc}", file=sys.stderr)
             skipped_unsafe += 1
             continue
-        if fpath.exists() and not args.force:
+        if (fpath.exists() or fpath in preview_paths) and not args.force:
+            continue
+        if dry_run:
+            preview_paths.add(fpath)
+            written += 1
             continue
         try:
             if args.force:
@@ -616,6 +676,13 @@ def cmd_import(args) -> None:
         written += 1
         _progress_tick("import", written)
     _progress_done("import", written)
+    _report_netscape_import(written, skipped_scheme, skipped_unsafe, dry_run)
+
+
+def _report_netscape_import(
+    written: int, skipped_scheme: int, skipped_unsafe: int, dry_run: bool
+) -> None:
+    """Keep browser import diagnostics and preview output together."""
     if skipped_scheme:
         print(
             f"bm: skipped {skipped_scheme} entries with disallowed URL scheme",
@@ -626,7 +693,10 @@ def cmd_import(args) -> None:
             f"bm: skipped {skipped_unsafe} entries with unsafe folder paths",
             file=sys.stderr,
         )
-    print("import ok")
+    if dry_run:
+        print(f"Would import {written} bookmarks. No files written.")
+    else:
+        print("import ok")
 
 
 # Neutralize store-local `.git/config` keys that can run arbitrary commands

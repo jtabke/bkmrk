@@ -84,12 +84,12 @@ class Store:
         """Verify a member still matches a previously captured snapshot."""
         self._check_snapshot(path, expected)
 
-    def write(self, path: Path, data: str, expected: Optional[bytes] = None) -> None:
+    def write(self, path: Path, data: str | bytes, expected: Optional[bytes] = None) -> None:
         """Atomically replace a member, optionally requiring an unchanged snapshot."""
         checked = self.ensure_parent(path)
         atomic_write(checked, data, expected=expected)
 
-    def create_entry(self, path: Path, data: str) -> None:
+    def create_entry(self, path: Path, data: str | bytes) -> None:
         """Atomically create a member without replacing an existing destination."""
         checked = self.ensure_parent(path)
         atomic_create(checked, data)

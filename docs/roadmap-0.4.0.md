@@ -51,20 +51,21 @@ The release should answer two user questions:
 
 #### Lossless JSON backup and restore
 
-- [ ] Define a versioned JSON backup contract.
-- [ ] Preserve path, URL, title, tags, timestamps, body, and unknown metadata.
-- [ ] Keep the current pipeline-oriented JSON/JSONL output compatible.
-- [ ] Add lossless restore with no-clobber behavior by default.
-- [ ] Add `--force` only where replacement semantics are explicit.
-- [ ] Add `--dry-run` with deterministic counts and diagnostics.
-- [ ] Detect malformed records, duplicate destinations, unsafe paths, and unsupported URL
+- [x] Define a versioned JSON backup contract.
+- [x] Preserve path, URL, title, tags, timestamps, body, and unknown metadata.
+- [x] Keep the current pipeline-oriented JSON/JSONL output compatible.
+- [x] Add lossless restore with no-clobber behavior by default.
+- [x] Add `--force` only where replacement semantics are explicit.
+- [x] Add `--dry-run` with deterministic counts and diagnostics.
+- [x] Detect malformed records, duplicate destinations, unsafe paths, and unsupported URL
   schemes before mutation begins.
-- [ ] Add JSON → store → JSON round-trip tests, including unknown metadata and notes.
-- [ ] Document the difference between pipeline export and a complete backup.
+- [x] Add JSON → store → JSON round-trip tests, including unknown metadata and notes.
+- [x] Document the difference between pipeline export and a complete backup.
 
-**Decision required:** choose between dedicated `bm backup` / `bm restore` commands and an
-explicit full-fidelity mode under `bm export` / `bm import`. Do not silently change the
-existing JSON schema.
+**Decision:** plain `bm export` produces a complete versioned backup; `-o` safely creates
+an output file. Existing explicit `export json` / JSONL and Netscape exports stay
+unchanged. `bm import` recognizes backups automatically and supports `--dry-run`.
+No new top-level commands. See the [backup contract](backup-format.md).
 
 #### Store diagnostics
 
@@ -249,7 +250,7 @@ Track decisions here before implementation changes public behavior.
 
 | Decision | Status | Default proposal |
 |---|---|---|
-| Lossless backup command shape | Open | Dedicated versioned backup/restore contract |
+| Lossless backup command shape | Decided | Default `export`, optional `-o`, automatic `import` |
 | Existing JSON export compatibility | Preserve | Do not silently change its schema |
 | Initial `doctor` mutation authority | Decided | Read-only |
 | Browser transport | Open | Prototype Native Messaging first |

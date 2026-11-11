@@ -250,8 +250,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("tags", nargs="+")
     p.set_defaults(func=cmd_tag)
 
-    p = sp.add_parser("export", help="Export bookmarks")
-    spx = p.add_subparsers(dest="fmt", required=True)
+    p = sp.add_parser(
+        "export",
+        help="Export a complete backup or browser/pipeline data",
+        description=(
+            "Export a complete lossless JSON backup by default. Write to stdout, or use "
+            "-o FILE to safely create a new file. Explicit netscape/json formats are "
+            "browser/pipeline exports, not complete backups."
+        ),
+    )
+    p.add_argument("-o", "--output", help="Write backup to a new file (never overwrite)")
+    p.set_defaults(func=cmd_export)
+    spx = p.add_subparsers(dest="fmt")
     pe = spx.add_parser("netscape", help="Export as Netscape bookmarks HTML")
     _add_filter_flags(pe)
     pe.set_defaults(func=cmd_export)
@@ -264,9 +274,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     pj.set_defaults(func=cmd_export)
 
-    p = sp.add_parser("import", help="Import bookmarks")
+    p = sp.add_parser(
+        "import",
+        help="Import a backup or browser bookmarks",
+        description=(
+            "Recognize a lossless JSON backup or Netscape browser HTML automatically. "
+            "Backup imports validate all records before writing, leave identical files "
+            "alone, and stop on conflicting paths unless --force is given."
+        ),
+    )
     p.add_argument("file")
-    p.add_argument("-f", "--force", action="store_true", help="Overwrite if exists")
+    p.add_argument(
+        "-f", "--force", action="store_true", help="Replace matching paths, keep unrelated files"
+    )
+    p.add_argument("--dry-run", action="store_true", help="Preview without filesystem changes")
     p.set_defaults(func=cmd_import)
 
     p = sp.add_parser("sync", help="git add/commit/push if repo")

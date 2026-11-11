@@ -229,6 +229,7 @@ The implementation keeps the filesystem backend concrete and separates responsib
 - `bm.io`: front matter parsing/rendering and atomic file replacement
 - `bm.query`: immutable filter values and list/search row logic
 - `bm.netscape`: Netscape HTML import/export conversion
+- `bm.backup`: versioned exact-content backups and restore preflight
 - `bm.dedupe`: pure duplicate selection and merge rules
 
 Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.
@@ -345,13 +346,48 @@ are not written into filenames.
 
 ### `export` and `import`
 
-Netscape HTML (for browsers) and JSON exports; Netscape import with folder hierarchies preserved.
+**Plain export is a complete, lossless bookmark backup.** Import recognizes backups and
+Netscape browser HTML automatically.
+
+```bash
+bm export -o bookmarks.json             # Safely create a new backup file
+bm export > bookmarks.json             # Same JSON to stdout; shell redirection can overwrite
+bm import bookmarks.json --dry-run     # Validate and preview without filesystem changes
+bm import bookmarks.json               # Restore missing bookmarks; leave identical ones alone
+bm import bookmarks.json --force       # Also replace conflicting paths, never delete unrelated files
+```
+
+`-o` / `--output` is for complete backups: omit the format and place the option after
+`export`. It refuses existing output files and publishes the completed backup atomically.
+The output directory must already exist. Backups include every `.bm` file, preserving exact
+paths and UTF-8 content: URLs, titles, tags, timestamps, unknown metadata, comments, notes,
+and line endings. They do not include Git history/configuration, other store files, file
+permissions, or filesystem timestamps. Symlinks and unreadable/non-UTF-8 bookmarks cause
+export to fail rather than silently produce an incomplete backup. Backup exports do not
+accept filters.
+
+Backup import validates every record before writing, rejecting malformed records,
+unsupported versions, duplicate/overlapping destinations, unsafe paths, symlinks, and
+missing or unsupported URL schemes. Any differing existing bookmark blocks the entire
+preflight unless `--force` is given. `--dry-run` lists conflicts and reports deterministic
+counts without creating the store; conflicts return exit status 1 even during a preview.
+Identical files are left untouched. Validation failures write nothing; an I/O failure or
+concurrent edit during writing can leave earlier files restored. Each file is published
+atomically, new files never clobber concurrent creations, and replacements check the
+preflight byte snapshot. This is not a whole-store transaction or a snapshot of concurrent
+store edits. See the [backup format and recovery contract](docs/backup-format.md).
+
+Existing browser and pipeline exports remain unchanged:
 
 ```bash
 bm export netscape [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] > bookmarks.html
 bm export json [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PREFIX] [--jsonl] > dump.json
-bm import bookmarks.html [-f]
+bm import bookmarks.html [-f] [--dry-run]
 ```
+
+`export json` / JSONL is a metadata-only pipeline format, **not a restorable backup**.
+Netscape import preserves folder hierarchies and retains its best-effort skip behavior;
+its dry-run reports how many bookmarks would be imported and any skipped invalid entries.
 
 ### `sync`
 
