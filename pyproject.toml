@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,11 +7,11 @@ name = "bkmrk"
 version = "0.3.1"
 description = "Plain-text, pass-style bookmarks"
 readme = "README.md"
-license = {file = "LICENSE"}
-requires-python = ">=3.8"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 keywords = ["bookmarks", "bm", "bkmrk", "Plain-text bookmarks"]
@@ -27,8 +27,8 @@ dev = [
     "mutmut",
     "prek",
     "pytest-cov",
-    "pytest>=7.0",
-    "ruff",
+    "pytest>=9.2",
+    "ruff==0.17.3",
 ]
 build = [
     "build",
@@ -44,7 +44,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py312"
 extend-exclude = ["mutants"]
 
 [tool.ruff.lint]
@@ -71,7 +71,7 @@ version_files = ["pyproject.toml:version"]
 update_changelog_on_bump = true
 
 [tool.mutmut]
-paths_to_mutate = ["src/bm/"]
-tests_dir = ["tests"]
-runner = ".venv/bin/python -m pytest -x -q -k 'not test_module_entry_point_runs'"
+source_paths = ["src/bm/"]
+pytest_add_cli_args_test_selection = ["tests"]
+pytest_add_cli_args = ["-x", "-q", "-k", "not test_module_entry_point_runs"]
 do_not_mutate = ["src/bm/__init__.py", "src/bm/__main__.py"]

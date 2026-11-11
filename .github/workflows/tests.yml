@@ -9,6 +9,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   pytest:
     name: Pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
@@ -16,25 +19,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: "3.8"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.12"
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12", "3.15"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@v7.1.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-      - name: Create virtual environment
-        run: uv venv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Install dependencies
-        run: uv pip install -e ".[dev]"
+        run: uv sync --locked --extra dev
       - name: Run tests
-        run: uv run pytest
+        run: uv run --locked --extra dev pytest

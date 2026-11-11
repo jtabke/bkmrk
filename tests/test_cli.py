@@ -96,8 +96,9 @@ class TestMain:
 
     @patch("bm.cli.cmd_list", side_effect=RuntimeError("boom"))
     def test_bm_debug_re_raises(self, _mock):
-        with patch("sys.argv", ["bm", "list"]), patch.dict(
-            "os.environ", {"BM_DEBUG": "1"}, clear=False
+        with (
+            patch("sys.argv", ["bm", "list"]),
+            patch.dict("os.environ", {"BM_DEBUG": "1"}, clear=False),
         ):
             with pytest.raises(RuntimeError):
                 main()
