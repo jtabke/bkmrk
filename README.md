@@ -537,6 +537,7 @@ uv run --locked --extra build twine check --strict dist/*
 ```
 
 The lockfile includes development and build tools; the runtime remains standard-library-only.
+The project applies a seven-day release-age cooldown to dependency resolution in both local and CI runs.
 Keep the pinned Ruff version in `pyproject.toml` and `prek.toml` synchronized when updating it.
 CI checks package builds and metadata without publishing. Release publishing remains a separate,
 explicitly authorized action.

@@ -42,6 +42,9 @@ bm = "bm.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.uv]
+exclude-newer = "7 days"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
