@@ -647,7 +647,9 @@ def _export_row(rel, meta) -> Dict[str, Any]:
 
 def _export_netscape(store: Store, filters: FilterSpec) -> None:
     entries = []
-    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+    for entry in store.iter_entries(
+        meta_only=True, path_prefix=filters.path, on_error=_warn_skipped
+    ):
         if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
         entries.append((entry.relative_path.as_posix(), entry.meta))
@@ -656,9 +658,10 @@ def _export_netscape(store: Store, filters: FilterSpec) -> None:
 
 
 def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
+    entries = store.iter_entries(meta_only=True, path_prefix=filters.path, on_error=_warn_skipped)
     if jsonl:
         # Stream NDJSON one row at a time; output is unsorted.
-        for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+        for entry in entries:
             if not passes_filters(entry.relative_path, entry.meta, filters):
                 continue
             sys.stdout.write(
@@ -666,7 +669,7 @@ def _export_json(store: Store, filters: FilterSpec, jsonl: bool) -> None:
             )
         return
     rows = []
-    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+    for entry in entries:
         if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
         rows.append(_export_row(entry.relative_path, entry.meta))

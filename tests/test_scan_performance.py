@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bm.commands import _collect_rows, _search_entries
+from bm.commands import _collect_rows, _export_json, _export_netscape, _search_entries
 from bm.io import build_text
 from bm.query import SEARCH_FIELDS, FilterSpec, search_rows
 from bm.store import Store
@@ -123,6 +123,65 @@ def test_prefix_keeps_broken_bookmark_symlink_warning(tmp_path):
         == []
     )
     assert warnings == [Path("missing")]
+
+
+@pytest.mark.parametrize("fmt", ["json", "jsonl", "netscape"])
+@pytest.mark.parametrize(
+    "filters,expected_paths",
+    [
+        (FilterSpec(path="dev"), ["dev/keep", "dev/skip"]),
+        (FilterSpec(path="/dev/"), ["dev/keep", "dev/skip"]),
+        (FilterSpec(path="dev\\"), ["dev/keep", "dev/skip"]),
+        (FilterSpec(path="dev/keep"), ["dev/keep"]),
+        (FilterSpec(path="missing"), []),
+        (FilterSpec(path="dev/../news"), []),
+        (FilterSpec(path="dev", tag="keep"), ["dev/keep", "dev/skip"]),
+        (FilterSpec(path="dev", host="keep.example.com"), ["dev/keep", "dev/skip"]),
+        (
+            FilterSpec(path="dev", since=datetime(2026, 1, 1, tzinfo=timezone.utc)),
+            ["dev/keep", "dev/skip"],
+        ),
+        (FilterSpec(), ["dev/keep", "dev/skip", "device/other", "news/other"]),
+    ],
+)
+def test_export_prefix_skips_reads_and_preserves_output(
+    scan_store, monkeypatch, capsys, fmt, filters, expected_paths
+):
+    store, opened = scan_store
+    original_iter = store.iter_entries
+
+    def export():
+        if fmt == "netscape":
+            _export_netscape(store, filters)
+        else:
+            _export_json(store, filters, jsonl=fmt == "jsonl")
+
+    def full_scan(**kwargs):
+        kwargs["path_prefix"] = ""
+        return original_iter(**kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(store, "iter_entries", full_scan)
+        export()
+    expected_output = capsys.readouterr().out
+    opened.clear()
+    traversed = []
+    original_rglob = Path.rglob
+
+    def track_rglob(path, pattern, **kwargs):
+        traversed.append(path)
+        return original_rglob(path, pattern, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", track_rglob)
+    export()
+
+    assert capsys.readouterr().out == expected_output
+    assert sorted(path for path, _ in opened) == expected_paths
+    assert all(mode == "rb" for _, mode in opened)
+    if filters.path in {"dev", "/dev/", "dev\\"}:
+        assert traversed == [store.root / "dev"]
+    elif filters.path in {"dev/keep", "missing"}:
+        assert traversed == []
 
 
 def test_body_search_opens_each_entry_once(scan_store):
