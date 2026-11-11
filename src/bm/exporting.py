@@ -3,22 +3,34 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Dict, TextIO
+from typing import TextIO, TypedDict
 
+from .models import Metadata, metadata_tags, metadata_text
 from .netscape import NETSCAPE_FOOTER, NETSCAPE_HEADER, build_netscape_tree
 from .query import FilterSpec, passes_filters
 from .store import Store
 
 
-def export_row(rel: Path, meta: Dict[str, Any]) -> Dict[str, Any]:
+class ExportRow(TypedDict):
+    """The metadata-only pipeline schema, intentionally without a stable ID."""
+
+    path: str
+    url: str
+    title: str
+    tags: list[str]
+    created: str
+    modified: str
+
+
+def export_row(rel: Path, meta: Metadata) -> ExportRow:
     """Build the existing metadata-only pipeline schema, without a stable-ID field."""
     return {
         "path": rel.as_posix(),
-        "url": meta.get("url", ""),
-        "title": meta.get("title", ""),
-        "tags": meta.get("tags", []),
-        "created": meta.get("created", ""),
-        "modified": meta.get("modified", ""),
+        "url": metadata_text(meta, "url"),
+        "title": metadata_text(meta, "title"),
+        "tags": list(metadata_tags(meta)),
+        "created": metadata_text(meta, "created"),
+        "modified": metadata_text(meta, "modified"),
     }
 
 

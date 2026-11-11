@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .errors import UnsafePathError
 from .io import parse_front_matter
+from .models import metadata_text
 from .paths import is_reserved_path
 from .store import Store
 from .urls import inspect_url
@@ -75,7 +76,7 @@ def _inspect_bookmark(
             diagnostics[0],
             "Preserve a copy; correct the header without discarding notes or unknown fields.",
         )
-    url = meta.get("url", "").strip()
+    url = metadata_text(meta, "url").strip()
     if not url:
         report.add(
             "missing_url",

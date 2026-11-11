@@ -1,10 +1,12 @@
 """Pure Netscape bookmark HTML parsing and rendering."""
 
 import html
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from .models import Metadata, metadata_tags, metadata_text
 from .utils import parse_iso, to_epoch
 
 NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -16,12 +18,20 @@ NETSCAPE_HEADER = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
 NETSCAPE_FOOTER = "</DL><p>\n"
 
 
+@dataclass
+class _FolderNode:
+    """Keep folder names separate from the node's bookmark collection."""
+
+    children: dict[str, "_FolderNode"] = field(default_factory=dict)
+    bookmarks: list[str] = field(default_factory=list)
+
+
 class _NetscapeParser(HTMLParser):
     """Collect Netscape bookmarks while tolerating HTML layout variations."""
 
     def __init__(self, default_created: Optional[str]) -> None:
         super().__init__(convert_charrefs=True)
-        self.entries: List[Tuple[str, Dict[str, Any]]] = []
+        self.entries: List[Tuple[str, Metadata]] = []
         self.invalid_count = 0
         self.folder_stack: List[str] = []
         self.default_created = default_created
@@ -73,7 +83,7 @@ class _NetscapeParser(HTMLParser):
 
         raw_tags = bookmark["tags"] or ""
         tags = [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
-        meta: Dict[str, Any] = {
+        meta: Metadata = {
             "url": url,
             "title": "".join(self._bookmark_title).strip(),
             "tags": tags,
@@ -92,34 +102,39 @@ class _NetscapeParser(HTMLParser):
         self.entries.append((path, meta))
 
 
-def build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
+def build_netscape_tree(entries: List[Tuple[str, Metadata]]) -> str:
     """Build Netscape HTML with folder hierarchy from ``(path, metadata)`` entries."""
 
-    def build_html(node: Dict[str, Any]) -> str:
-        output = ""
-        for bookmark in node.get("__bookmarks__", []):
-            output += bookmark
-        for key, value in sorted(node.items()):
-            if key == "__bookmarks__":
-                continue
-            if isinstance(value, dict):
-                folder_name = html.escape(str(key), quote=True)
-                output += f"<DT><H3>{folder_name}</H3>\n<DL><p>\n"
-                output += build_html(value)
-                output += "</DL><p>\n"
-        return output
+    def build_html(node: _FolderNode) -> str:
+        parts = list(node.bookmarks)
+        for name, child in sorted(node.children.items()):
+            folder_name = html.escape(name, quote=True)
+            parts.append(f"<DT><H3>{folder_name}</H3>\n<DL><p>\n")
+            parts.append(build_html(child))
+            parts.append("</DL><p>\n")
+        return "".join(parts)
 
-    root: Dict[str, Any] = {}
+    root = _FolderNode()
     for path, meta in entries:
         parts = path.split("/")
         current = root
         for part in parts[:-1]:
-            current = current.setdefault(part, {})
-        bookmarks = current.setdefault("__bookmarks__", [])
-        add_date = to_epoch(parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))) or ""
-        tags = html.escape(",".join(str(tag) for tag in meta.get("tags", [])), quote=True)
-        title = html.escape(str(meta.get("title") or meta.get("url") or ""), quote=True)
-        url = html.escape(str(meta.get("url") or ""), quote=True)
+            if part not in current.children:
+                current.children[part] = _FolderNode()
+            current = current.children[part]
+        bookmarks = current.bookmarks
+        add_date = (
+            to_epoch(
+                parse_iso(metadata_text(meta, "created"))
+                or parse_iso(metadata_text(meta, "modified"))
+            )
+            or ""
+        )
+        tags = html.escape(",".join(str(tag) for tag in metadata_tags(meta)), quote=True)
+        title = html.escape(
+            str(metadata_text(meta, "title") or metadata_text(meta, "url") or ""), quote=True
+        )
+        url = html.escape(str(metadata_text(meta, "url") or ""), quote=True)
         bookmarks.append(f'<DT><A HREF="{url}" ADD_DATE="{add_date}" TAGS="{tags}">{title}</A>\n')
 
     return build_html(root)
@@ -127,7 +142,7 @@ def build_netscape_tree(entries: List[Tuple[str, Dict[str, Any]]]) -> str:
 
 def parse_netscape_html(
     text: str, *, default_created: Optional[str] = None
-) -> List[Tuple[str, Dict[str, Any]]]:
+) -> List[Tuple[str, Metadata]]:
     """Parse Netscape HTML into ``(folder path, metadata)`` bookmark entries.
 
     ``default_created`` is supplied by the application boundary for imports
@@ -140,7 +155,7 @@ def parse_netscape_html(
 
 def parse_netscape_document(
     text: str, *, default_created: Optional[str] = None
-) -> Tuple[List[Tuple[str, Dict[str, Any]]], int]:
+) -> Tuple[List[Tuple[str, Metadata]], int]:
     """Return parsed entries and the count of anchors missing an href attribute."""
     parser = _NetscapeParser(default_created)
     parser.feed(text)

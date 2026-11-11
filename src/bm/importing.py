@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .errors import UnsafePathError
 from .io import build_text
+from .models import Metadata, metadata_text
 from .netscape import parse_netscape_document
 from .store import Store
 from .urls import inspect_url
@@ -32,12 +33,12 @@ class ImportCounts:
 def _import_path(
     store: Store,
     folder: str,
-    meta: dict,
+    meta: Metadata,
     counts: ImportCounts,
     on_warning: Callable[[str], None] | None,
 ) -> Path | None:
     """Validate a browser record and retain diagnostic counts for previews."""
-    inspection = inspect_url(meta.get("url", ""))
+    inspection = inspect_url(metadata_text(meta, "url"))
     if inspection.problem:
         counts.invalid_url += 1
         if on_warning:
@@ -46,7 +47,7 @@ def _import_path(
     if not inspection.supported:
         counts.invalid_scheme += 1
         return None
-    slug = create_slug_from_url(meta["url"])
+    slug = create_slug_from_url(metadata_text(meta, "url"))
     full_path = f"{folder}/{slug}" if folder else slug
     try:
         destination = store.path_for(full_path)

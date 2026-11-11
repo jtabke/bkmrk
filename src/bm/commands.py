@@ -9,7 +9,7 @@ import tempfile
 import textwrap
 import webbrowser
 from pathlib import Path
-from typing import List, TextIO, Tuple
+from typing import TextIO, Tuple
 
 from .backup import apply_restore, plan_restore, read_backup, write_backup
 from .clipboard import read_clipboard, write_clipboard
@@ -21,9 +21,9 @@ from .exporting import write_json, write_netscape
 from .git import inspect_git, run_git
 from .importing import ImportCounts, import_netscape
 from .io import atomic_text_create, build_text, load_entry, parse_front_matter
-from .models import FILE_EXT, default_store
+from .models import FILE_EXT, default_store, metadata_tags, metadata_text
 from .paths import normalize_slug, reject_unsafe
-from .query import SEARCH_FIELDS, FilterSpec, collect_rows, passes_filters, search_rows
+from .query import SEARCH_FIELDS, FilterSpec, QueryRow, collect_rows, passes_filters, search_rows
 from .store import Store
 from .urls import ALLOWED_URL_SCHEMES, inspect_url
 from .utils import (
@@ -139,7 +139,7 @@ def _warn_existing_urls(store: Store, url: str, destination: Path) -> None:
         if entry.path == destination:
             continue
         try:
-            existing_key = normalize_url_for_compare(entry.meta.get("url", ""))
+            existing_key = normalize_url_for_compare(metadata_text(entry.meta, "url"))
         except ValueError:
             continue
         if existing_key == key:
@@ -196,7 +196,7 @@ def cmd_add(args) -> None:
         original_url = meta["url"]
         meta = {**meta2, "created": meta["created"]}
         body = body2
-        if not meta.get("url"):
+        if not metadata_text(meta, "url"):
             raise BmError("url cleared in editor")
         if meta["url"] != original_url:
             print(
@@ -212,8 +212,8 @@ def cmd_add(args) -> None:
             store.create_entry(fpath, build_text(meta, body))
     except FileExistsError as exc:
         raise BmError(f"bookmark exists: {slug} (use --force to overwrite)") from exc
-    _warn_existing_urls(store, meta.get("url", ""), fpath)
-    print(rid(meta.get("url", "")))
+    _warn_existing_urls(store, metadata_text(meta, "url"), fpath)
+    print(rid(metadata_text(meta, "url")))
 
 
 def cmd_show(args) -> None:
@@ -251,7 +251,7 @@ def cmd_open(args) -> None:
     store = _store_from_args(args)
     if direct:
         meta, _ = load_entry(store.require_entry(args.id), meta_only=True)
-        url = meta.get("url", "")
+        url = metadata_text(meta, "url")
     else:
         url = _select_open_row(store, args)["url"]
     if not url:
@@ -268,7 +268,7 @@ def cmd_copy(args) -> None:
     """Copy only the stored URL without launching a browser or changing the store."""
     store = _store_from_args(args)
     meta, _ = load_entry(store.require_entry(args.id), meta_only=True)
-    url = meta.get("url", "")
+    url = metadata_text(meta, "url")
     _copy_url(url)
 
 
@@ -321,7 +321,7 @@ def _filter_spec_from_args(args) -> FilterSpec:
     return FilterSpec(tag=tag, host=host, path=path, since=since)
 
 
-def _collect_rows(store: Store, filters: FilterSpec) -> List[dict]:
+def _collect_rows(store: Store, filters: FilterSpec) -> list[QueryRow]:
     entries = (
         (entry.relative_path, entry.meta)
         for entry in store.iter_entries(
@@ -333,7 +333,7 @@ def _collect_rows(store: Store, filters: FilterSpec) -> List[dict]:
     return collect_rows(entries, filters)
 
 
-def _output_rows(rows: List[dict], args):
+def _output_rows(rows: list[QueryRow], args):
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
     elif args.jsonl:
@@ -415,7 +415,7 @@ def cmd_search(args) -> None:
         raise BmError(exit_code=1)
 
 
-def _pick_row(rows: List[dict]) -> dict:
+def _pick_row(rows: list[QueryRow]) -> QueryRow:
     """Exchange only sanitized display rows with fzf, never shell commands."""
     choices = {}
     for index, row in enumerate(rows):
@@ -464,7 +464,7 @@ def _pick_row(rows: List[dict]) -> dict:
     return choices[selection]
 
 
-def _select_open_row(store: Store, args) -> dict:
+def _select_open_row(store: Store, args) -> QueryRow:
     """Select one filtered bookmark only when input and UI output are terminals."""
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise BmError(
@@ -503,7 +503,7 @@ def cmd_edit(args) -> None:
         launch_editor(tmp)
         edited = tmp.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_front_matter(edited)
-        if not meta.get("url"):
+        if not metadata_text(meta, "url"):
             raise BmError("url cleared in editor")
         meta["modified"] = iso_now()
         store.write(p, build_text(meta, body), expected=original)
@@ -546,7 +546,7 @@ def cmd_tags(args) -> None:
     header_tags = set()
     for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
         folder_tags.update(entry.relative_path.parts[:-1])
-        header_tags.update(t.strip() for t in entry.meta.get("tags", []) if t.strip())
+        header_tags.update(t.strip() for t in metadata_tags(entry.meta) if t.strip())
     all_tags = sorted(folder_tags | header_tags)
     for t in all_tags:
         print(t)
@@ -627,7 +627,7 @@ def cmd_tag(args) -> None:
     entry = store.read_entry(p, snapshot=True)
     original = entry.snapshot
     meta, body = dict(entry.meta), entry.body
-    cur = set(meta.get("tags", []))
+    cur = set(metadata_tags(meta))
     if args.action == "add":
         cur.update([t.strip() for t in args.tags if t.strip()])
     else:

@@ -67,6 +67,7 @@ The implementation keeps the filesystem backend concrete and separates responsib
 
 - `bm.cli`: parser construction, `main(argv=None) -> int`, and process-boundary error/status handling
 - `bm.commands`: thin command orchestration and user-facing output
+- `bm.models`: open parsed-metadata types, typed field access, and runtime configuration
 - `bm.store`: safe normalized/exact paths, entry traversal, snapshots, and filesystem mutations
 - `bm.paths`: path syntax, reserved namespaces, filename rules, and literal prefix matching
 - `bm.io`: tolerant front matter parsing with optional diagnostics, rendering, and atomic persistence

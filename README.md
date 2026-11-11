@@ -197,6 +197,10 @@ Longer notes, checklists, code blocks…
 
 Each bookmark has a **stable ID** derived from its URL (BLAKE2b short hash). The ID does **not** change if you rename/move the file. You can use either the ID **or** a path‑like slug with commands.
 
+Several files can share an ID, including separate bookmarks with the same URL. ID lookup
+reports ambiguity instead of choosing the first file; use a complete path to select one.
+Existing exact-path and partial-name lookup precedence is unchanged.
+
 ---
 
 ## CLI usage

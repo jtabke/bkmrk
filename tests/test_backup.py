@@ -340,3 +340,23 @@ def test_invalid_stdin_backup_does_not_create_store(tmp_path, monkeypatch, raw):
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
     assert run(store, "import", "-") == 1
     assert not store.exists()
+
+
+def test_finalized_restore_plan_is_immutable(tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    from bm.backup import apply_restore, plan_restore
+    from bm.urls import ALLOWED_URL_SCHEMES
+
+    store = Store(tmp_path / "store")
+    entries = [{"path": "entry.bm", "content": CONTENT}]
+    plan = plan_restore(store, entries, ALLOWED_URL_SCHEMES, force=False)
+    assert isinstance(plan.items, tuple)
+    assert isinstance(plan.conflicts, tuple)
+    with pytest.raises(FrozenInstanceError):
+        plan.unchanged = 99
+    with pytest.raises(FrozenInstanceError):
+        plan.items[0].content = b"replacement"
+    entries[0]["content"] = "changed after preflight"
+    apply_restore(store, plan)
+    assert (store.root / "entry.bm").read_bytes() == CONTENT.encode("utf-8")

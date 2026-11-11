@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Iterable, Optional, Tuple, TypedDict
 from urllib.parse import urlparse
 
+from .models import Metadata, metadata_tags, metadata_text
 from .paths import matches_path_prefix
 from .utils import parse_iso, rid
 
@@ -21,33 +22,45 @@ class FilterSpec:
     since: Optional[datetime] = None
 
 
+class QueryRow(TypedDict):
+    """The stable list/search schema, also used by interactive selection."""
+
+    id: str
+    path: str
+    title: str
+    url: str
+    tags: list[str]
+    created: str
+    modified: str
+
+
 SEARCH_FIELDS = ("title", "url", "tags", "body")
 
 
-def _matches_tag(rel: Path, meta: Dict[str, Any], tag: Optional[str]) -> bool:
+def _matches_tag(rel: Path, meta: Metadata, tag: Optional[str]) -> bool:
     if not tag:
         return True
-    return tag in rel.parts[:-1] or tag in meta.get("tags", [])
+    return tag in rel.parts[:-1] or tag in metadata_tags(meta)
 
 
-def _matches_host(meta: Dict[str, Any], want_host: str) -> bool:
+def _matches_host(meta: Metadata, want_host: str) -> bool:
     if not want_host:
         return True
-    host = urlparse(meta.get("url", "")).netloc.lower()
+    host = urlparse(metadata_text(meta, "url")).netloc.lower()
     if host.startswith("www."):
         host = host[4:]
     hq = want_host[4:] if want_host.startswith("www.") else want_host
     return host == hq
 
 
-def _matches_since(meta: Dict[str, Any], since_dt: Optional[datetime]) -> bool:
+def _matches_since(meta: Metadata, since_dt: Optional[datetime]) -> bool:
     if since_dt is None:
         return True
-    ts = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+    ts = parse_iso(metadata_text(meta, "created")) or parse_iso(metadata_text(meta, "modified"))
     return bool(ts and ts >= since_dt)
 
 
-def passes_filters(rel: Path, meta: Dict[str, Any], filters: FilterSpec) -> bool:
+def passes_filters(rel: Path, meta: Metadata, filters: FilterSpec) -> bool:
     """Return whether an entry satisfies every configured filter."""
     return (
         _matches_tag(rel, meta, filters.tag)
@@ -57,32 +70,34 @@ def passes_filters(rel: Path, meta: Dict[str, Any], filters: FilterSpec) -> bool
     )
 
 
-def _build_row(rel: Path, meta: Dict[str, Any]) -> Dict[str, Any]:
-    url = meta.get("url", "")
-    timestamp = parse_iso(meta.get("created")) or parse_iso(meta.get("modified"))
+def _build_row(rel: Path, meta: Metadata) -> QueryRow:
+    url = metadata_text(meta, "url")
     return {
         "id": rid(url),
         "path": rel.as_posix(),
-        "title": meta.get("title", ""),
+        "title": metadata_text(meta, "title"),
         "url": url,
-        "tags": meta.get("tags", []),
-        "created": meta.get("created", ""),
-        "modified": meta.get("modified", ""),
-        "_sort": timestamp or datetime.min.replace(tzinfo=timezone.utc),
+        "tags": list(metadata_tags(meta)),
+        "created": metadata_text(meta, "created"),
+        "modified": metadata_text(meta, "modified"),
     }
 
 
-def sort_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Sort rows newest-first and remove their internal sort key."""
-    rows.sort(key=lambda row: row["_sort"], reverse=True)
-    for row in rows:
-        row.pop("_sort", None)
+def sort_rows(rows: list[QueryRow]) -> list[QueryRow]:
+    """Sort newest-first without adding or consuming private row fields."""
+
+    def timestamp(row: QueryRow) -> datetime:
+        return (
+            parse_iso(row["created"])
+            or parse_iso(row["modified"])
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
+
+    rows.sort(key=timestamp, reverse=True)
     return rows
 
 
-def collect_rows(
-    entries: Iterable[Tuple[Path, Dict[str, Any]]], filters: FilterSpec
-) -> List[Dict[str, Any]]:
+def collect_rows(entries: Iterable[Tuple[Path, Metadata]], filters: FilterSpec) -> list[QueryRow]:
     """Build and sort list rows from relative paths and metadata."""
     rows = []
     for rel, meta in entries:
@@ -92,15 +107,15 @@ def collect_rows(
     return sort_rows(rows)
 
 
-def _build_search_blob(meta: Dict[str, Any], body: str, fields: Tuple[str, ...]) -> str:
+def _build_search_blob(meta: Metadata, body: str, fields: Tuple[str, ...]) -> str:
     parts = []
     for field in fields:
         if field == "title":
-            parts.append(meta.get("title", ""))
+            parts.append(metadata_text(meta, "title"))
         elif field == "url":
-            parts.append(meta.get("url", ""))
+            parts.append(metadata_text(meta, "url"))
         elif field == "tags":
-            parts.append(" ".join(meta.get("tags", [])))
+            parts.append(" ".join(metadata_tags(meta)))
         elif field == "body":
             parts.append(body)
     return "\n".join(parts)
@@ -121,11 +136,11 @@ def _make_search_predicate(query: str, use_regex: bool) -> Callable[[str], bool]
 
 
 def search_rows(
-    entries: Iterable[Tuple[Path, Dict[str, Any], str]],
+    entries: Iterable[Tuple[Path, Metadata, str]],
     query: str,
     fields: Tuple[str, ...],
     use_regex: bool,
-) -> List[Dict[str, Any]]:
+) -> list[QueryRow]:
     """Build and sort search rows from entries with already-loaded bodies."""
     predicate = _make_search_predicate(query, use_regex)
     rows = []

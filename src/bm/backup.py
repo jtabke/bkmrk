@@ -9,6 +9,7 @@ from typing import Any, TextIO
 
 from .errors import BmError, UnsafePathError
 from .io import parse_front_matter
+from .models import metadata_text
 from .paths import is_reserved_path
 from .store import Store
 from .urls import inspect_url
@@ -104,7 +105,7 @@ def read_backup(text: str) -> list[dict[str, str]]:
     return entries
 
 
-@dataclass
+@dataclass(frozen=True)
 class RestoreItem:
     """A validated destination and its optimistic precondition."""
 
@@ -113,13 +114,13 @@ class RestoreItem:
     previous: bytes | None
 
 
-@dataclass
+@dataclass(frozen=True)
 class RestorePlan:
     """A complete preflight; no directories or files are created by planning."""
 
-    items: list[RestoreItem]
+    items: tuple[RestoreItem, ...]
     unchanged: int
-    conflicts: list[str]
+    conflicts: tuple[str, ...]
 
     def summary(self, *, preview: bool) -> str:
         added = sum(item.previous is None for item in self.items)
@@ -138,7 +139,9 @@ def plan_restore(
     """Validate all records and destinations before permitting any mutation."""
     if store.root.exists() and not store.root.is_dir():
         raise BmError(f"store is not a directory: {store.root}")
-    plan = RestorePlan([], 0, [])
+    items: list[RestoreItem] = []
+    unchanged = 0
+    conflicts: list[str] = []
     seen: set[Path] = set()
     ancestors: set[Path] = set()
     for entry in sorted(entries, key=lambda record: record["path"]):
@@ -154,7 +157,7 @@ def plan_restore(
         try:
             content = entry["content"].encode("utf-8")
             meta, _ = parse_front_matter(entry["content"])
-            inspection = inspect_url(meta.get("url", ""), schemes)
+            inspection = inspect_url(metadata_text(meta, "url"), schemes)
         except (UnicodeError, ValueError) as exc:
             raise BmError(f"invalid bookmark {name!r}: {exc}") from exc
         # Exact restore preserves supported-scheme content, including malformed
@@ -165,12 +168,12 @@ def plan_restore(
             raise BmError(f"destination is not a regular file: {name!r}")
         previous = store.snapshot(path) if path.exists() else None
         if previous == content:
-            plan.unchanged += 1
+            unchanged += 1
         elif previous is not None and not force:
-            plan.conflicts.append(name)
+            conflicts.append(name)
         else:
-            plan.items.append(RestoreItem(path, content, previous))
-    return plan
+            items.append(RestoreItem(path, content, previous))
+    return RestorePlan(tuple(items), unchanged, tuple(conflicts))
 
 
 def apply_restore(store: Store, plan: RestorePlan) -> None:

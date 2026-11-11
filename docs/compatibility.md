@@ -22,8 +22,10 @@ not a promise that every command preserves the original bytes.
   normalize whitespace. Use complete backup for byte-exact preservation.
 - The stable ID is derived from the **stored URL**, not the filename. Moving or renaming
   a file does not change the ID; changing the URL can. IDs are short hashes, not globally
-  unique identifiers. Multiple files with the same URL share an ID: use an explicit path
-  to disambiguate. Normalized-URL matching does not redefine ID generation.
+  unique identifiers. Multiple files with the same URL share an ID. ID lookup rejects
+  multiple matching entries rather than choosing the first: use an explicit path to
+  disambiguate. Existing exact-path and partial-name lookup precedence is unchanged.
+  Normalized-URL matching does not redefine ID generation.
 - Paths remain store-relative. Absolute paths, traversal, escapes, and the `.git` namespace
   are not supported bookmark destinations. Symlink and platform filename safeguards still
   apply; a valid Unix filename is not necessarily portable to Windows.

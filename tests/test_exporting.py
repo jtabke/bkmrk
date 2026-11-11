@@ -341,3 +341,21 @@ created: 2023-01-17T10:00:00Z
         assert imported["url"] == url
         assert imported["title"] == title
         assert imported["tags"] == tags
+
+
+@pytest.mark.parametrize("include_root", [False, True])
+def test_netscape_cli_exports_internal_looking_folder_names(store, write_bm, capsys, include_root):
+    from bm.cli import main
+    from bm.netscape import parse_netscape_html
+
+    write_bm("__bookmarks__/guide", url="https://example.com/guide")
+    expected = [("__bookmarks__", "https://example.com/guide")]
+    if include_root:
+        write_bm("root", url="https://example.com/root")
+        expected.append(("", "https://example.com/root"))
+    assert main(["--store", str(store), "export", "netscape"]) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert sorted(
+        (folder, meta["url"]) for folder, meta in parse_netscape_html(output.out)
+    ) == sorted(expected)

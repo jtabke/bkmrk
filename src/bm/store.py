@@ -3,7 +3,7 @@
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, Optional, Union
+from typing import Callable, Generator, Optional, Union
 
 from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
 from .io import (
@@ -14,7 +14,7 @@ from .io import (
     parse_front_matter,
     verify_snapshot,
 )
-from .models import FILE_EXT
+from .models import FILE_EXT, Metadata, metadata_text
 from .paths import (
     id_to_path,
     matches_path_prefix,
@@ -33,7 +33,7 @@ class StoreEntry:
 
     path: Path
     relative_path: Path
-    meta: Dict[str, Any]
+    meta: Metadata
     body: str
     snapshot: Optional[bytes] = None
 
@@ -282,6 +282,18 @@ class Store:
                 continue
             yield entry
 
+    def _single_match(self, matches: list[Path], token: str) -> Path | None:
+        """Resolve one match or require an explicit path when lookup is ambiguous."""
+        if len(matches) > 1:
+            listing = "\n  ".join(
+                path.relative_to(self.root).with_suffix("").as_posix() for path in sorted(matches)
+            )
+            raise AmbiguousEntryError(
+                f"ambiguous: {len(matches)} matches for {token!r}:\n  {listing}\n"
+                "Use a complete path from the list above."
+            )
+        return matches[0] if matches else None
+
     def resolve(self, token: str) -> Optional[Path]:
         """Resolve an ID or path token using the existing command priority."""
         token = token.strip()
@@ -300,19 +312,12 @@ class Store:
                 fuzzy.append(self._check_member(path))
             except UnsafePathError:
                 continue
-        if len(fuzzy) == 1:
-            return fuzzy[0]
-        if len(fuzzy) > 1:
-            listing = "\n  ".join(
-                path.relative_to(self.root).with_suffix("").as_posix() for path in sorted(fuzzy)
-            )
-            raise AmbiguousEntryError(
-                f"ambiguous: {len(fuzzy)} matches for {token!r}:\n  {listing}\n"
-                "Use a complete path from the list above."
-            )
+        if fuzzy:
+            return self._single_match(fuzzy, token)
 
+        matches = []
         for entry in self.iter_entries(meta_only=True):
-            url = entry.meta.get("url", "")
+            url = metadata_text(entry.meta, "url")
             if url and rid(url) == token:
-                return entry.path
-        return None
+                matches.append(entry.path)
+        return self._single_match(matches, token)
