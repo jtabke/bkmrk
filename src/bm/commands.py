@@ -250,7 +250,11 @@ def _filter_spec_from_args(args) -> FilterSpec:
 def _collect_rows(store: Store, filters: FilterSpec) -> List[dict]:
     entries = (
         (entry.relative_path, entry.meta)
-        for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped)
+        for entry in store.iter_entries(
+            meta_only=True,
+            path_prefix=filters.path,
+            on_error=_warn_skipped,
+        )
     )
     return collect_rows(entries, filters)
 
@@ -293,13 +297,20 @@ def _search_regex_from_args(args) -> bool:
 
 
 def _search_entries(store: Store, filters: FilterSpec, fields: Tuple[str, ...]):
-    """Yield filtered entries while retaining metadata-only body loading."""
+    """Read bodies once unless metadata filters can avoid loading them."""
     needs_body = "body" in fields
-    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
+    # Path filters run before reads; metadata filters can reject large bodies
+    # after reading only the header. Otherwise, load each entry just once.
+    full_read = needs_body and not (filters.tag or filters.host or filters.since)
+    for entry in store.iter_entries(
+        meta_only=not full_read,
+        path_prefix=filters.path,
+        on_error=_warn_skipped,
+    ):
         if not passes_filters(entry.relative_path, entry.meta, filters):
             continue
-        body = ""
-        if needs_body:
+        body = entry.body
+        if needs_body and not full_read:
             try:
                 _, body = load_entry(entry.path)
             except (OSError, ValueError, UnicodeError):

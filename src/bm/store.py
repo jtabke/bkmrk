@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Generator, Optional, Union
 from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
 from .io import atomic_create, atomic_move_no_replace, atomic_write, load_entry, parse_front_matter
 from .models import FILE_EXT
+from .query import _matches_path, _normalize_path_arg
 from .utils import _reject_unsafe, id_to_path, normalize_slug, rid
 
 
@@ -156,23 +157,58 @@ class Store:
             snapshot=raw_snapshot,
         )
 
+    def _iter_paths(self, prefix: str) -> Generator[Path, None, None]:
+        """Narrow scans to literal prefixes without following directory symlinks."""
+        if not prefix:
+            yield from self.root.rglob(f"*{FILE_EXT}")
+            return
+        try:
+            safe_prefix = _reject_unsafe(prefix)
+        except UnsafePathError:
+            safe_prefix = ""
+        if safe_prefix != prefix:
+            # Unusual filters retain their original string-matching semantics.
+            yield from self.root.rglob(f"*{FILE_EXT}")
+            return
+
+        directory = self.root
+        for part in prefix.split("/"):
+            directory = directory / part
+            if directory.is_symlink():
+                # rglob does not recurse into directory symlinks. Starting at
+                # one would change that behavior, even for an inward link.
+                yield from self.root.rglob(f"*{FILE_EXT}")
+                return
+
+        exact = self.root / (prefix + FILE_EXT)
+        if exact.exists() or exact.is_symlink():
+            yield exact
+        if directory.is_dir():
+            yield from directory.rglob(f"*{FILE_EXT}")
+
     def iter_entries(
         self,
         *,
         meta_only: bool = False,
         snapshot: bool = False,
+        path_prefix: str = "",
         on_error: Optional[Callable[[Path, Exception], None]] = None,
     ) -> Generator[StoreEntry, None, None]:
         """Yield parsed bookmark entries, optionally with byte snapshots.
 
         Malformed/unreadable entries are skipped to preserve the CLI's existing
         best-effort scan behavior. Callers can provide ``on_error`` to retain
-        the warning presentation at the CLI boundary.
+        the warning presentation at the CLI boundary. ``path_prefix`` selects
+        extensionless relative paths before file reads and avoids traversing
+        unrelated directories when safe.
         """
         if not self.exists():
             return
-        for path in self.root.rglob(f"*{FILE_EXT}"):
+        prefix = _normalize_path_arg(path_prefix)
+        for path in self._iter_paths(prefix):
             relative = path.relative_to(self.root).with_suffix("")
+            if prefix and not _matches_path(relative, prefix):
+                continue
             try:
                 if snapshot:
                     entry = self.read_entry(path, snapshot=True)

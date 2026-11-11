@@ -88,6 +88,27 @@ def test_store_iteration_and_fuzzy_resolution_skip_outward_symlinks(tmp_path):
     assert store.resolve("outside") is None
 
 
+def test_containment_rechecks_store_root_after_symlink_retarget(tmp_path):
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+    private = old_root / "private.bm"
+    _write_entry(private)
+    link = tmp_path / "store"
+    link.symlink_to(old_root, target_is_directory=True)
+    store = Store(link)
+    assert store.read_entry(link / "private.bm").meta["url"] == "https://example.com"
+
+    link.unlink()
+    link.symlink_to(new_root, target_is_directory=True)
+    (new_root / "outside.bm").symlink_to(private)
+
+    with pytest.raises(UnsafePathError):
+        store.read_entry(link / "outside.bm")
+    assert list(store.iter_entries()) == []
+
+
 def test_prune_with_relative_root_never_removes_store_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     store = Store("store")
