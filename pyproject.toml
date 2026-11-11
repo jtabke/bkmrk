@@ -43,7 +43,7 @@ bm = "bm.cli:main"
 where = ["src"]
 
 [tool.uv]
-exclude-newer = "7 days"
+exclude-newer = "3 days"
 
 [tool.ruff]
 line-length = 100
