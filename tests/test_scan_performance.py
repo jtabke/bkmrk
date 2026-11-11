@@ -1,15 +1,77 @@
 """Regression tests for avoiding unnecessary bookmark reads during scans."""
 
 import builtins
+import os
+import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from bm.commands import _collect_rows, _export_json, _export_netscape, _search_entries
+from bm.backup import build_backup
+from bm.commands import _collect_rows, _search_entries
+from bm.doctor import inspect_store
+from bm.exporting import write_json, write_netscape
 from bm.io import build_text
 from bm.query import SEARCH_FIELDS, FilterSpec, search_rows
 from bm.store import Store
+from bm.urls import ALLOWED_URL_SCHEMES
+
+
+@pytest.mark.parametrize("operation", ["backup", "doctor"])
+def test_backup_and_doctor_visit_each_directory_once(tmp_path, monkeypatch, operation):
+    store = Store(tmp_path / "store")
+    store.create()
+    paths = ["dev/reading/entry", "news/entry"]
+    for relative in paths:
+        store.create_entry(
+            store.path_for(relative), build_text({"url": "https://example.com/" + relative}, "")
+        )
+    metadata = store.root / ".git" / "objects" / "pack"
+    metadata.mkdir(parents=True)
+    (metadata / "unrelated").write_text("Git data is not bookmark content", encoding="utf-8")
+    expected = {store.root, metadata, *metadata.parents}
+    expected = {path for path in expected if path.is_relative_to(store.root)}
+    expected.update([store.root / "dev", store.root / "dev/reading", store.root / "news"])
+    scanned = Counter()
+    original_scandir = os.scandir
+
+    def count_scandir(path):
+        scanned[Path(path)] += 1
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", count_scandir)
+    if operation == "backup":
+        build_backup(store)
+    else:
+        assert inspect_store(store, ALLOWED_URL_SCHEMES).document()["ok"]
+    assert scanned == Counter({path: 1 for path in expected})
+
+
+@pytest.mark.parametrize("operation", ["backup", "doctor"])
+def test_traversal_failure_is_not_retried_or_silently_omitted(tmp_path, monkeypatch, operation):
+    store = Store(tmp_path / "store")
+    store.create()
+    blocked = store.root / "blocked"
+    blocked.mkdir()
+    scanned = Counter()
+    original_scandir = os.scandir
+
+    def fail_scandir(path):
+        scanned[Path(path)] += 1
+        if Path(path) == blocked:
+            raise PermissionError(13, "unreadable", str(blocked))
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fail_scandir)
+    if operation == "backup":
+        with pytest.raises(PermissionError, match="unreadable"):
+            build_backup(store)
+    else:
+        findings = inspect_store(store, ALLOWED_URL_SCHEMES).findings
+        assert [item.code for item in findings] == ["unreadable_directory"]
+    assert scanned == Counter({store.root: 1, blocked: 1})
 
 
 @pytest.fixture
@@ -152,9 +214,9 @@ def test_export_prefix_skips_reads_and_preserves_output(
 
     def export():
         if fmt == "netscape":
-            _export_netscape(store, filters)
+            write_netscape(store, filters, sys.stdout)
         else:
-            _export_json(store, filters, jsonl=fmt == "jsonl")
+            write_json(store, filters, sys.stdout, jsonl=fmt == "jsonl")
 
     def full_scan(**kwargs):
         kwargs["path_prefix"] = ""

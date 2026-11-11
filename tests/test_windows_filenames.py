@@ -6,7 +6,7 @@ import pytest
 
 from bm.cli import main
 from bm.errors import UnsafePathError
-from bm.utils import _reject_windows_names, id_to_path
+from bm.paths import id_to_path, reject_windows_names
 
 
 @pytest.mark.parametrize(
@@ -36,14 +36,14 @@ from bm.utils import _reject_windows_names, id_to_path
 )
 def test_unsupported_windows_components_have_clear_diagnostics(name):
     with pytest.raises(UnsafePathError, match="unsupported Windows filename"):
-        _reject_windows_names(name)
+        reject_windows_names(name)
 
 
 @pytest.mark.parametrize(
     "name", ["dev/example.bm", "conifer.bm", "auxiliary.bm", "com10.bm", ".notes/é.bm"]
 )
 def test_ordinary_windows_names_are_allowed(name):
-    _reject_windows_names(name)
+    reject_windows_names(name)
 
 
 @pytest.mark.parametrize("slug", ["CON", "nul.txt", r"AUX\entry", "LPT²", "folder./entry"])

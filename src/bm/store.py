@@ -1,14 +1,30 @@
 """Concrete filesystem boundary for bookmark stores."""
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, Optional, Union
 
 from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
-from .io import atomic_create, atomic_move_no_replace, atomic_write, load_entry, parse_front_matter
+from .io import (
+    atomic_create,
+    atomic_move_no_replace,
+    atomic_write,
+    load_entry,
+    parse_front_matter,
+    verify_snapshot,
+)
 from .models import FILE_EXT
-from .query import _matches_path, _normalize_path_arg
-from .utils import _reject_unsafe, id_to_path, normalize_slug, rid
+from .paths import (
+    id_to_path,
+    matches_path_prefix,
+    normalize_path_prefix,
+    normalize_slug,
+    reject_reserved_namespace,
+    reject_unsafe,
+    reject_windows_names,
+)
+from .utils import rid
 
 
 @dataclass
@@ -37,6 +53,15 @@ class Store:
         """Return whether the store directory exists."""
         return self.root.is_dir()
 
+    def check_root(self) -> None:
+        """Reject a root blocked by a non-directory without creating anything."""
+        for parent in (self.root, *self.root.parents):
+            if (parent.exists() or parent.is_symlink()) and not parent.is_dir():
+                raise UnsafePathError(
+                    f"store path is blocked by a non-directory: {parent}; "
+                    "choose another --store path"
+                )
+
     def create(self) -> Path:
         """Create the store directory with restrictive permissions."""
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -52,14 +77,57 @@ class Store:
         """Return ``path`` after ensuring it is contained by this store."""
         candidate = Path(path)
         try:
-            candidate.resolve().relative_to(self.root.resolve())
+            resolved_relative = candidate.resolve().relative_to(self.root.resolve())
         except ValueError as exc:
             raise UnsafePathError(f"path is outside store: {candidate}") from exc
+        reject_reserved_namespace(resolved_relative.as_posix())
+        # Check the lexical name as well: an inward link inside .git must not
+        # make a reserved destination look like an ordinary bookmark path.
+        if candidate.absolute().is_relative_to(self.root.absolute()):
+            relative = candidate.absolute().relative_to(self.root.absolute())
+            reject_reserved_namespace(relative.as_posix())
         return candidate
 
     def path_for(self, slug: str) -> Path:
         """Build a safe store-relative bookmark path from user input."""
         return self._check_member(id_to_path(self.root, slug))
+
+    def exact_path(self, name: str) -> Path:
+        """Validate an exact bookmark filename without slug normalization or links."""
+        if not name or "\\" in name or reject_unsafe(name) != name or not name.endswith(FILE_EXT):
+            raise UnsafePathError(f"unsafe bookmark path: {name!r}")
+        reject_reserved_namespace(name)
+        if sys.platform == "win32":
+            reject_windows_names(name)
+        path = self._check_member(self.root / name)
+        self.check_destination(path)
+        return path
+
+    def check_destination(self, path: Path) -> None:
+        """Reject linked or blocked destinations without creating directories."""
+        checked = self._check_member(path)
+        current = self.root
+        for part in checked.relative_to(self.root).parts:
+            current = current / part
+            if current.is_symlink():
+                raise UnsafePathError(f"symlink in bookmark destination: {current}")
+            if not current.exists():
+                continue
+            if current == checked:
+                if not current.is_file():
+                    raise UnsafePathError(f"destination is not a regular file: {current}")
+            elif not current.is_dir():
+                raise UnsafePathError(f"parent is not a directory: {current}")
+
+    def require_entry(self, token: str) -> Path:
+        """Resolve a bookmark or report the shared actionable not-found diagnostic."""
+        path = self.resolve(token)
+        if path is None:
+            raise NotFoundError(
+                f"bookmark not found: {token!r}; use 'bm search <terms>' or 'bm list' "
+                "to find an ID or path"
+            )
+        return path
 
     def ensure_parent(self, path: Path) -> Path:
         """Create a bookmark path's parent directory after containment checks."""
@@ -71,19 +139,9 @@ class Store:
         """Read the exact bytes used as an optimistic mutation precondition."""
         return self._check_member(path).read_bytes()
 
-    def _check_snapshot(self, path: Path, expected: bytes) -> None:
-        """Raise a conflict when a path no longer matches its read snapshot."""
-        checked = self._check_member(path)
-        try:
-            current = checked.read_bytes()
-        except FileNotFoundError as exc:
-            raise ConflictError(f"bookmark changed since it was read: {checked}") from exc
-        if current != expected:
-            raise ConflictError(f"bookmark changed since it was read: {checked}")
-
     def verify(self, path: Path, expected: bytes) -> None:
         """Verify a member still matches a previously captured snapshot."""
-        self._check_snapshot(path, expected)
+        verify_snapshot(self._check_member(path), expected)
 
     def write(self, path: Path, data: str | bytes, expected: Optional[bytes] = None) -> None:
         """Atomically replace a member, optionally requiring an unchanged snapshot."""
@@ -99,7 +157,7 @@ class Store:
         """Delete a member, optionally requiring an unchanged snapshot."""
         checked = self._check_member(path)
         if expected is not None:
-            self._check_snapshot(checked, expected)
+            self.verify(checked, expected)
         try:
             checked.unlink()
         except FileNotFoundError as exc:
@@ -122,7 +180,7 @@ class Store:
         if source.is_symlink():
             raise OSError(f"refusing to move a symlink: {source}")
         if expected is not None:
-            self._check_snapshot(source, expected)
+            self.verify(source, expected)
         source_parent = source.parent
         if force:
             source.replace(destination)
@@ -163,7 +221,7 @@ class Store:
             yield from self.root.rglob(f"*{FILE_EXT}")
             return
         try:
-            safe_prefix = _reject_unsafe(prefix)
+            safe_prefix = reject_unsafe(prefix)
         except UnsafePathError:
             safe_prefix = ""
         if safe_prefix != prefix:
@@ -204,10 +262,10 @@ class Store:
         """
         if not self.exists():
             return
-        prefix = _normalize_path_arg(path_prefix)
+        prefix = normalize_path_prefix(path_prefix)
         for path in self._iter_paths(prefix):
             relative = path.relative_to(self.root).with_suffix("")
-            if prefix and not _matches_path(relative, prefix):
+            if prefix and not matches_path_prefix(relative, prefix):
                 continue
             try:
                 if snapshot:
@@ -227,8 +285,8 @@ class Store:
     def resolve(self, token: str) -> Optional[Path]:
         """Resolve an ID or path token using the existing command priority."""
         token = token.strip()
-        slug = normalize_slug(_reject_unsafe(token))
-        slug = _reject_unsafe(slug)
+        slug = normalize_slug(reject_unsafe(token))
+        slug = reject_unsafe(slug)
         exact = self.path_for(slug)
         if exact.exists():
             return exact

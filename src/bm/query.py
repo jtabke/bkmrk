@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from .paths import matches_path_prefix
 from .utils import parse_iso, rid
 
 
@@ -21,11 +22,6 @@ class FilterSpec:
 
 
 SEARCH_FIELDS = ("title", "url", "tags", "body")
-
-
-def _normalize_path_arg(value: Optional[str]) -> str:
-    """Normalize separators and remove surrounding slashes from a path filter."""
-    return value.replace("\\", "/").strip("/") if value else ""
 
 
 def _matches_tag(rel: Path, meta: Dict[str, Any], tag: Optional[str]) -> bool:
@@ -51,20 +47,12 @@ def _matches_since(meta: Dict[str, Any], since_dt: Optional[datetime]) -> bool:
     return bool(ts and ts >= since_dt)
 
 
-def _matches_path(rel: Path, path_prefix: str) -> bool:
-    path_prefix = _normalize_path_arg(path_prefix)
-    if not path_prefix:
-        return True
-    logical_path = rel.as_posix()
-    return logical_path.startswith(path_prefix + "/") or logical_path == path_prefix
-
-
 def passes_filters(rel: Path, meta: Dict[str, Any], filters: FilterSpec) -> bool:
     """Return whether an entry satisfies every configured filter."""
     return (
         _matches_tag(rel, meta, filters.tag)
         and _matches_host(meta, filters.host)
-        and _matches_path(rel, filters.path)
+        and matches_path_prefix(rel, filters.path)
         and _matches_since(meta, filters.since)
     )
 

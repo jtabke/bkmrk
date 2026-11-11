@@ -202,9 +202,11 @@ def test_dedupe_conflict_preserves_newer_redundant_entry(tmp_path):
         return real_verify(current_store, path, expected)
 
     args = type("Args", (), {"store": str(store_path), "dry_run": False, "json": False})()
-    with patch.object(Store, "verify", interfere), pytest.raises(ConflictError):
+    with patch.object(Store, "verify", interfere), pytest.raises(ConflictError) as error:
         cmd_dedupe(args)
 
+    assert "dedupe stopped" in str(error.value)
+    assert error.value.exit_code == 1
     assert verify_calls >= 1
     assert survivor.exists()
     assert redundant.read_text(encoding="utf-8") == "newer external content\n"
@@ -236,9 +238,13 @@ def test_dedupe_late_conflict_preserves_newer_file_and_reports_partial_progress(
         return real_delete(current_store, path, expected)
 
     args = type("Args", (), {"store": str(store_path), "dry_run": False, "json": False})()
-    with patch.object(Store, "delete", interfere), pytest.raises(ConflictError):
+    with patch.object(Store, "delete", interfere), pytest.raises(ConflictError) as error:
         cmd_dedupe(args)
 
+    assert "earlier changes may have been applied" in str(error.value)
+    assert "bm dedupe --dry-run" in str(error.value)
+    assert isinstance(error.value.__cause__, ConflictError)
+    assert error.value.exit_code == 1
     assert survivor.exists()
     assert conflicted_path is not None
     assert conflicted_path.read_text(encoding="utf-8") == "newer external content\n"

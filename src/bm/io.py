@@ -1,9 +1,13 @@
 """Input/Output functions for bookmarks."""
 
+import json
 import os
 import re
 import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,29 +40,51 @@ def _normalize_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
     return m
 
 
-def _parse_tags(v: str) -> List[str]:
-    if v.startswith("[") and v.endswith("]"):
-        inner = v[1:-1].strip()
-        if inner:
-            parts = []
-            buf, inq = "", False
-            for ch in inner:
-                if ch in "\"'":
-                    inq = not inq
-                    continue
-                if ch == "," and not inq:
-                    if buf.strip():
-                        parts.append(buf.strip())
-                    buf = ""
-                else:
-                    buf += ch
-            if buf.strip():
-                parts.append(buf.strip())
-            return [t.strip() for t in parts if t.strip()]
+def _parse_tags(value: str, diagnostics: Optional[List[str]] = None) -> List[str]:
+    """Read literal legacy tags or an explicitly marked JSON string array."""
+    if value.startswith("json:["):
+        return _parse_json_tags(value, diagnostics)
+    if not (value.startswith("[") and value.endswith("]")):
+        return [tag.strip() for tag in value.split(",") if tag.strip()]
+    parts = []
+    buffer: List[str] = []
+    quote = ""
+    for char in value[1:-1]:
+        if quote:
+            buffer.append(char)
+            if char == quote:
+                quote = ""
+        elif char in "\"'" and not "".join(buffer).strip():
+            quote = char
+            buffer.append(char)
+        elif char == ",":
+            parts.append("".join(buffer).strip())
+            buffer = []
         else:
-            return []
-    else:
-        return [t.strip() for t in v.split(",") if t.strip()]
+            buffer.append(char)
+    parts.append("".join(buffer).strip())
+    return [_unquote_tag(part) for part in parts if part]
+
+
+def _parse_json_tags(value: str, diagnostics: Optional[List[str]]) -> List[str]:
+    """Decode the explicit escaped representation, retaining damaged text for recovery."""
+    try:
+        tags = json.loads(value[5:])
+    except ValueError:
+        tags = None
+    if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+        return tags
+    if diagnostics is not None:
+        diagnostics.append("Invalid JSON-encoded tags (expected an array of strings).")
+    # Retain damaged encoded text rather than discarding it during a rewrite.
+    return [value]
+
+
+def _unquote_tag(value: str) -> str:
+    """Remove legacy enclosing quotes without interpreting any backslashes."""
+    if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+        return value[1:-1]
+    return value
 
 
 def _parse_no_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
@@ -104,7 +130,7 @@ def _consume_block_scalar(lines: List[str], start: int) -> Tuple[str, int]:
     return "\n".join(block), i
 
 
-def _parse_header(header: str) -> Dict[str, Any]:
+def _parse_header(header: str, diagnostics: Optional[List[str]] = None) -> Dict[str, Any]:
     meta: Dict[str, Any] = {}
     lines = header.splitlines()
     i = 0
@@ -115,12 +141,16 @@ def _parse_header(header: str) -> Dict[str, Any]:
             i += 1
             continue
 
-        if ":" not in line:
-            i += 1
-            continue
-
-        key, value = line.split(":", 1)
+        key, separator, value = line.partition(":")
         key = key.strip().lower()
+        if not separator or not key:
+            if diagnostics is not None:
+                diagnostics.append(f"Invalid front-matter line: {line!r}.")
+            if not separator:
+                i += 1
+                continue
+        if key in meta and diagnostics is not None:
+            diagnostics.append(f"Repeated front-matter key: {key!r}.")
         value = value.strip()
 
         if value == "|":
@@ -128,7 +158,7 @@ def _parse_header(header: str) -> Dict[str, Any]:
             continue
 
         if key == "tags":
-            meta["tags"] = _parse_tags(value)
+            meta["tags"] = _parse_tags(value, diagnostics)
         else:
             meta[key] = value
 
@@ -152,22 +182,39 @@ def _split_front_matter(text: str) -> Optional[Tuple[str, str]]:
     return text[opening_end : closing.start()], text[closing.end() :]
 
 
-def parse_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
+def parse_front_matter(
+    text: str, *, diagnostics: Optional[List[str]] = None
+) -> Tuple[Dict[str, Any], str]:
     """Parse front matter whose opening and closing markers occupy full lines."""
     parts = _split_front_matter(text)
     if parts is None:
+        if diagnostics is not None:
+            diagnostics.append(
+                "Missing or incomplete front matter (expected opening and closing --- lines)."
+            )
         if text.startswith(FM_START) or text.startswith("---\r\n"):
             return {"tags": []}, text
         return _parse_no_front_matter(text)
 
     header, body = parts
-    meta = _parse_header(header)
+    meta = _parse_header(header, diagnostics)
     return _normalize_meta(meta), body.lstrip("\r\n")
 
 
 def _fmt_tag(t: str) -> str:
-    """Quote tags containing commas, spaces, or empty."""
-    return f'"{t}"' if ("," in t or " " in t or t == "") else t
+    """Quote special tags; the list renderer marks any necessary JSON escaping."""
+    if not t or any(char.isspace() or char in ",\\\"'" for char in t):
+        # ASCII escapes keep Unicode line separators inside one header line.
+        return json.dumps(t)
+    return t
+
+
+def _format_tags(tags: List[str]) -> str:
+    """Keep ordinary lists readable; mark escaped strings to avoid legacy ambiguity."""
+    parts = [_fmt_tag(tag) for tag in tags]
+    if any("\\" in part for part in parts):
+        return "json:" + json.dumps(tags)
+    return "[" + ", ".join(parts) + "]"
 
 
 def build_text(meta: Dict[str, Any], body: str) -> str:
@@ -179,7 +226,9 @@ def build_text(meta: Dict[str, Any], body: str) -> str:
     lines = [FM_START]
     for k in keys:
         v = m[k]
-        if isinstance(v, list):
+        if k == "tags":
+            lines.append(f"{k}: {_format_tags(v)}\n")
+        elif isinstance(v, list):
             lines.append(f"{k}: [{', '.join(_fmt_tag(t) for t in v)}]\n")
         else:
             if "\n" in str(v):
@@ -229,7 +278,7 @@ def _refuse_symlink(path: Path) -> None:
         raise OSError(f"refusing to overwrite symlink: {path}")
 
 
-def _check_expected(path: Path, expected: bytes) -> None:
+def verify_snapshot(path: Path, expected: bytes) -> None:
     """Raise if ``path`` no longer contains the bytes that were read."""
     try:
         current = path.read_bytes()
@@ -283,7 +332,7 @@ def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None
     try:
         _refuse_symlink(path)
         if expected is not None:
-            _check_expected(path, expected)
+            verify_snapshot(path, expected)
         _write_temp(fd, data)
         # Recheck the symlink policy before the final optimistic-content check.
         # A portable filesystem compare-and-swap is unavailable, so an external
@@ -291,7 +340,7 @@ def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None
         # detection for every change observable before this final check.
         _refuse_symlink(path)
         if expected is not None:
-            _check_expected(path, expected)
+            verify_snapshot(path, expected)
         os.replace(tmp_name, path)
         _fsync_directory(path.parent)
     except BaseException:
@@ -306,35 +355,41 @@ def atomic_write(path: Path, data: str | bytes, expected: Optional[bytes] = None
         raise
 
 
-def atomic_create(path: Path, data: str | bytes) -> None:
-    """Create a file without replacing a destination that appears concurrently.
+@contextmanager
+def atomic_text_create(path: Path) -> Iterator[TextIOWrapper]:
+    """Stream UTF-8 to a temporary file, then publish complete content without clobbering.
 
-    Data is written and fsynced to a same-directory temporary file first. A
-    hard link publishes that complete file atomically and fails with
-    ``FileExistsError`` when another writer wins. Filesystems without hard-link
-    support fail explicitly; this function never falls back to replacement. A
-    crash after publication can leave the temporary hard-link name behind, but
-    the destination remains complete and no existing file is overwritten.
+    A failed serializer or publication leaves no partial destination. Hard-link
+    publication is mandatory; unsupported filesystems never fall back to replacement.
     """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            _refuse_symlink(path)
+            yield stream
+            stream.flush()
+            os.fsync(stream.fileno())
         _refuse_symlink(path)
-        _write_temp(fd, data)
-        _refuse_symlink(path)
-        os.link(tmp_name, path)
+        os.link(tmp, path)
         _fsync_directory(path.parent)
-        os.unlink(tmp_name)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
         _fsync_directory(path.parent)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+
+
+def atomic_create(path: Path, data: str | bytes) -> None:
+    """Publish complete content without replacing an existing destination."""
+    # The concrete UTF-8 wrapper also exposes its binary buffer so exact-byte
+    # callers share publication/cleanup without decoding or newline translation.
+    with atomic_text_create(path) as stream:
+        if isinstance(data, bytes):
+            stream.buffer.write(data)
+        else:
+            stream.write(data)
 
 
 def atomic_move_no_replace(source: Path, destination: Path) -> None:

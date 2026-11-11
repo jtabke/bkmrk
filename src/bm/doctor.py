@@ -6,12 +6,12 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
 
-from .backup import backup_path
 from .errors import UnsafePathError
-from .io import _split_front_matter, parse_front_matter
+from .io import parse_front_matter
+from .paths import is_reserved_path
 from .store import Store
+from .urls import inspect_url
 from .utils import normalize_url_for_compare, rid
 
 
@@ -53,30 +53,6 @@ class DoctorReport:
         }
 
 
-def _header_problem(text: str) -> str | None:
-    parts = _split_front_matter(text)
-    if parts is None:
-        return "Missing or incomplete front matter (expected opening and closing --- lines)."
-    keys: set[str] = set()
-    block = False
-    for line in parts[0].splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if block and line[0].isspace():
-            continue
-        block = False
-        key, separator, value = stripped.partition(":")
-        key = key.strip().lower()
-        if not separator or not key:
-            return f"Invalid front-matter line: {stripped!r}."
-        if key in keys:
-            return f"Repeated front-matter key: {key!r}."
-        keys.add(key)
-        block = value.strip() == "|"
-    return None
-
-
 def _inspect_bookmark(
     report: DoctorReport, name: str, raw: bytes, schemes: frozenset[str]
 ) -> str | None:
@@ -90,15 +66,15 @@ def _inspect_bookmark(
             "Preserve a copy, then correct the encoding in an editor.",
         )
         return None
-    problem = _header_problem(text)
-    if problem:
+    diagnostics: list[str] = []
+    meta, _ = parse_front_matter(text, diagnostics=diagnostics)
+    if diagnostics:
         report.add(
             "invalid_front_matter",
             [name],
-            problem,
+            diagnostics[0],
             "Preserve a copy; correct the header without discarding notes or unknown fields.",
         )
-    meta, _ = parse_front_matter(text)
     url = meta.get("url", "").strip()
     if not url:
         report.add(
@@ -108,28 +84,21 @@ def _inspect_bookmark(
             "Restore the URL from a trusted copy or edit this bookmark manually.",
         )
         return None
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme.lower() not in schemes:
-            report.add(
-                "unsupported_url_scheme",
-                [name],
-                "URL scheme is missing or unsupported.",
-                "Check the saved URL; do not open an untrusted scheme.",
-            )
-            return None
-        if parsed.scheme.lower() in {"http", "https", "ftp", "ftps"}:
-            if not parsed.hostname:
-                raise ValueError("missing host")
-            _ = parsed.port
-        elif not parsed.path:
-            raise ValueError("missing mail address")
-    except ValueError as exc:
+    inspection = inspect_url(url, schemes)
+    if inspection.problem:
         report.add(
             "invalid_url",
             [name],
-            f"Malformed URL: {exc}.",
+            f"Malformed URL: {inspection.problem}.",
             "Correct the URL manually; doctor does not fetch or open it.",
+        )
+        return None
+    if not inspection.supported:
+        report.add(
+            "unsupported_url_scheme",
+            [name],
+            "URL scheme is missing or unsupported.",
+            "Check the saved URL; do not open an untrusted scheme.",
         )
         return None
     return url
@@ -161,7 +130,7 @@ def _inspect_file(
             )
             return None
         report.checked += 1
-        backup_path(store, name)
+        store.exact_path(name)
         url = _inspect_bookmark(report, name, path.read_bytes(), schemes)
         return url, info
     except (OSError, UnsafePathError, ValueError) as exc:
@@ -186,20 +155,30 @@ def _walk_files(store: Store, report: DoctorReport) -> Iterator[Path]:
         )
 
     for root, dirs, files in os.walk(store.root, onerror=walk_error):
+        in_git = is_reserved_path(Path(root).relative_to(store.root).as_posix())
         for name in sorted(dirs.copy()):
             path = Path(root) / name
-            if name.casefold() == ".git":
+            if path.is_symlink():
                 dirs.remove(name)
-            elif path.is_symlink():
-                dirs.remove(name)
-                report.add(
-                    "symlink_directory",
-                    [path.relative_to(store.root).as_posix()],
-                    "Symlink directory is not inspected.",
-                    "Inspect the link manually; keep bookmark directories inside the store.",
-                )
+                if not in_git and name.casefold() != ".git":
+                    report.add(
+                        "symlink_directory",
+                        [path.relative_to(store.root).as_posix()],
+                        "Symlink directory is not inspected.",
+                        "Inspect the link manually; keep bookmark directories inside the store.",
+                    )
         for name in sorted(files):
-            yield Path(root) / name
+            path = Path(root) / name
+            if in_git:
+                if path.suffix == ".bm":
+                    report.add(
+                        "reserved_bookmark_path",
+                        [path.relative_to(store.root).as_posix()],
+                        "Bookmark is inside reserved Git metadata and cannot be backed up.",
+                        "Preserve a copy and move the bookmark outside every .git directory.",
+                    )
+            else:
+                yield path
 
 
 def inspect_store(store: Store, schemes: frozenset[str]) -> DoctorReport:

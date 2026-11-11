@@ -1,21 +1,13 @@
 """Utility functions for the bookmark manager."""
 
 import hashlib
-import ntpath
-import os
 import posixpath
 import re
-import shlex
-import shutil
-import subprocess
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from urllib.parse import ParseResult, parse_qsl, urlencode, urlparse
 
-from .errors import UnsafePathError
-from .models import FILE_EXT
+from .paths import normalize_slug
 
 
 def iso_now() -> str:
@@ -61,83 +53,6 @@ def to_epoch(dt: Optional[datetime]) -> Optional[int]:
     if not dt:
         return None
     return int(dt.timestamp())
-
-
-def normalize_slug(s: str) -> str:
-    """Normalize string to a slug."""
-    s = s.lower().strip().strip("/").replace(" ", "-")
-    s = re.sub(r"[^\w\-/\.]", "", s)
-    s = re.sub(r"-{2,}", "-", s)
-    s = s.strip("-")
-    if "/" in s:
-        parts = [p.strip("-") for p in s.split("/") if p]
-        s = "/".join(parts)
-    return s or "untitled"
-
-
-def _reject_absolute_path(rel: str) -> None:
-    """Reject POSIX and Windows absolute path syntax before normalization."""
-    if rel.startswith(("/", "\\")) or ntpath.isabs(rel):
-        raise UnsafePathError("absolute paths not allowed")
-    if ntpath.splitdrive(rel)[0]:
-        raise UnsafePathError("drive-qualified paths not allowed")
-
-
-def _reject_unsafe(rel: str) -> str:
-    """Reject unsafe path segments.
-
-    Rejects: absolute paths, any all-dots segment ('..', '...', etc.), and
-    NUL bytes. Leading-dot segments like '.git' are accepted (caller may need
-    them); all-dots are blocked because they enable parent traversal or
-    upload to ambiguous filesystem locations.
-    """
-    if "\x00" in rel:
-        raise UnsafePathError("null byte in path not allowed")
-    _reject_absolute_path(rel)
-    rel = rel.replace("\\", "/")
-    parts = [p for p in rel.split("/") if p]
-    for p in parts:
-        if p and set(p) == {"."}:
-            raise UnsafePathError(f"unsafe path segment {p!r} not allowed")
-    return "/".join(parts)
-
-
-def _reject_windows_names(rel: str) -> None:
-    """Reject Windows device names and unsupported filesystem components."""
-    for part in rel.replace("\\", "/").split("/"):
-        if part.endswith((".", " ")):
-            raise UnsafePathError(f"unsupported Windows filename {part!r}: trailing dot or space")
-        if any(ord(char) < 32 or char in '<>:"|?*' for char in part):
-            raise UnsafePathError(f"unsupported Windows filename {part!r}: invalid character")
-        stem = part.split(".", 1)[0].rstrip(" ").upper()
-        if stem in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} or re.fullmatch(
-            r"(?:COM|LPT)[1-9¹²³]", stem
-        ):
-            raise UnsafePathError(f"unsupported Windows filename {part!r}: reserved device name")
-
-
-def is_relative_to(path: Path, base: Path) -> bool:
-    """Check if path is relative to base."""
-    try:
-        path.resolve().relative_to(base.resolve())
-        return True
-    except Exception:
-        return False
-
-
-def id_to_path(store: Path, slug: str) -> Path:
-    """Convert slug to a store-relative path; rejects escapes."""
-    # Validate the raw input first: normalize_slug intentionally strips
-    # leading slashes for URL-derived slugs, but user paths must not be
-    # silently reinterpreted as relative paths.
-    slug = normalize_slug(_reject_unsafe(slug))
-    slug = _reject_unsafe(slug)
-    if sys.platform == "win32":
-        _reject_windows_names(slug + FILE_EXT)
-    fpath = store / (slug + FILE_EXT)
-    if not is_relative_to(fpath, store):
-        raise UnsafePathError("destination escapes store")
-    return fpath
 
 
 def _short_sha(s: str) -> str:
@@ -351,70 +266,3 @@ def normalize_url_for_compare(url: str) -> str:
         return _compose_web_key(scheme, netloc, path, query)
 
     return _compose_non_web_key(parsed, scheme, query, raw)
-
-
-def _split_editor_command(editor: str) -> List[str]:
-    """Parse editor arguments using the host's command-line quoting rules."""
-    if "\x00" in editor or not editor.strip():
-        raise OSError("editor command is empty or contains a NUL byte")
-    if sys.platform != "win32":
-        try:
-            return shlex.split(editor)
-        except ValueError as exc:
-            raise OSError(f"invalid editor command: {exc}") from exc
-
-    # Windows backslashes are literal except before double quotes. shlex's
-    # POSIX parser corrupts paths; its non-POSIX mode also mishandles quotes.
-    import ctypes
-
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    parse = shell32.CommandLineToArgvW
-    parse.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
-    parse.restype = ctypes.POINTER(ctypes.c_wchar_p)
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    count = ctypes.c_int()
-    argv = parse(editor.strip(), ctypes.byref(count))
-    if not argv:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return list(argv[: count.value])
-    finally:
-        kernel32.LocalFree(argv)
-
-
-def _call_windows_editor(cmd: List[str]) -> int:
-    """Run native editors directly, and safely quote Windows batch launchers."""
-    cmd[0] = shutil.which(cmd[0]) or cmd[0]
-    if not cmd[0].lower().endswith((".cmd", ".bat")):
-        return subprocess.call(cmd, shell=False)
-
-    # Windows batch files always involve cmd.exe, even with shell=False.
-    # Quote every argument, disable AutoRun/delayed expansion, and reject
-    # characters that could be expanded or break quoting inside the launcher.
-    if any(any(char in arg for char in '"%!\r\n\x00') for arg in cmd):
-        raise OSError("batch editor arguments contain unsafe characters; use a native .exe editor")
-    quoted = " ".join('"' + arg + "\\" * (len(arg) - len(arg.rstrip("\\"))) + '"' for arg in cmd)
-    shell = ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
-    command = f'{subprocess.list2cmdline([shell])} /d /v:off /s /c "{quoted}"'
-    return subprocess.call(command, executable=shell, shell=False)
-
-
-def _launch_editor(path: Path) -> None:
-    """Launch the editor, wait for it, and fail if it exits unsuccessfully."""
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
-    cmd = (
-        _split_editor_command(editor)
-        if editor
-        else ["notepad" if sys.platform == "win32" else "vi"]
-    )
-    if not cmd or not cmd[0]:
-        raise OSError("editor command is empty")
-    cmd.append(str(path))
-    if sys.platform == "win32":
-        returncode = _call_windows_editor(cmd)
-    else:
-        returncode = subprocess.call(cmd, shell=False)
-    if returncode:
-        raise OSError(f"editor exited with status {returncode}")
