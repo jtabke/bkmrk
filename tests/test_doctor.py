@@ -226,7 +226,7 @@ def test_git_external_commands_are_not_launched(git_store, tmp_path, capsys):
     flag = tmp_path / "must-not-exist"
     config = git_store / ".git" / "config"
     with config.open("a") as stream:
-        stream.write(f'\n[core]\n\tfsmonitor = "touch {flag}"\n')
+        stream.write(f'\n[core]\n\tfsmonitor = "touch {flag.as_posix()}"\n')
     assert report(git_store, capsys)[0] == 0
     assert not flag.exists()
 

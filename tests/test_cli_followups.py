@@ -104,7 +104,10 @@ def test_ordinary_add_does_not_read_stdin(tmp_path, capsys):
 def test_stdin_backup_preview_and_restore_preserve_bytes(tmp_path, monkeypatch, capsys):
     original = tmp_path / "original"
     target = bookmark(original)
-    target.write_bytes(target.read_bytes().replace(b"\n", b"\r\n") + b"\r\nNotes  \r\n")
+    # Normalize native newlines first: write_text already emits CRLF on Windows.
+    content = target.read_bytes().replace(b"\r\n", b"\n")
+    target.write_bytes(content.replace(b"\n", b"\r\n") + b"\r\nNotes  \r\n")
+    assert b"\r\r\n" not in target.read_bytes()
     assert run(original, "export") == 0
     backup = capsys.readouterr().out.encode()
     restored = tmp_path / "restored"
