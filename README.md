@@ -61,8 +61,8 @@ filesystem tool.
   - [`add`](#add)
   - [`list`](#list)
   - [`search`](#search)
-  - [`pick`](#pick)
   - [`show` and `open`](#show-and-open)
+  - [`copy`](#copy)
   - [`edit`, `rm`, `mv`](#edit-rm-mv)
   - [`tags` and `tag add|rm`](#tags-and-tag-addrm)
   - [`dirs`](#dirs)
@@ -72,9 +72,10 @@ filesystem tool.
   - [`sync`](#sync)
 
 - [Filtering & output formats](#filtering--output-formats)
-- [Integration recipes](#integration-recipes)
+- [Integration recipes](docs/integrations.md)
 - [Configuration](#configuration)
 - [Security & robustness](#security--robustness)
+- [Guides](#guides)
 - [Development](#development)
 - [License](#license)
 
@@ -107,50 +108,15 @@ Alternatively, using uv to install as a tool:
 uv tool install bkmrk
 ```
 
-For the latest development version, clone and install locally:
-
-```bash
-git clone https://github.com/jtabke/bkmrk
-cd bkmrk
-python -m pip install .
-```
-
-Or with uv:
-
-```bash
-git clone https://github.com/jtabke/bkmrk
-cd bkmrk
-uv pip install .
-```
-
-Development workflows can pull in the optional extras declared in `pyproject.toml`:
-
-```bash
-python -m pip install -e '.[dev]'
-```
-
-Or with uv:
-
-```bash
-uv sync --locked --extra dev
-```
-
-Prefer running straight from the repository without installation? Point Python at
-the `src` layout:
-
-```bash
-PYTHONPATH=src python -m bm --help
-```
-
-On Windows (PowerShell):
-
-```powershell
-$env:PYTHONPATH = "src"; python -m bm --help
-```
+For source installs, development environments, and running directly from a checkout,
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## Quickstart
+
+Watch the [short terminal walkthrough](docs/terminal-demo.md) for installation from a
+working-tree wheel, adding/searching bookmarks, reading a `.bm` file, and inspecting a Git diff.
 
 ```bash
 # initialize a new store (optionally a git repo)
@@ -174,9 +140,8 @@ bm search kernel --path dev/linux
 # list directory prefixes
 bm dirs
 
-# open the first result
-ID=$(bm search kernel --jsonl | head -1 | jq -r '.id')
-bm open "$ID"
+# choose a matching bookmark to open (optional fzf required)
+bm open --search kernel
 
 # export for browsers (Netscape HTML)
 bm export netscape > bookmarks.html
@@ -224,32 +189,13 @@ Longer notes, checklists, code blocks…
   When tags need escape sequences, writers use an explicit `json:` prefix, for example
   `tags: json:["say\"hello", "C:\\new folder"]`. Only this marked form interprets JSON
   escapes. Ordinary lists remain readable, and rewrites preserve their tag values.
-- Any extra keys are preserved on round‑trip
+- Parsed rewrites retain non-empty unknown fields, not original formatting or comments.
+  Complete backups preserve exact UTF-8 content. See the
+  [format and CLI compatibility policy](docs/compatibility.md) for operation-specific limits.
 
 ### IDs
 
 Each bookmark has a **stable ID** derived from its URL (BLAKE2b short hash). The ID does **not** change if you rename/move the file. You can use either the ID **or** a path‑like slug with commands.
-
-### Architecture
-
-The implementation keeps the filesystem backend concrete and separates responsibilities by seam:
-
-- `bm.cli`: parser construction, `main(argv=None) -> int`, and process-boundary error/status handling
-- `bm.commands`: thin command orchestration and user-facing output
-- `bm.store`: safe normalized/exact paths, entry traversal, snapshots, and filesystem mutations
-- `bm.paths`: path syntax, reserved namespaces, filename rules, and literal prefix matching
-- `bm.io`: tolerant front matter parsing with optional diagnostics, rendering, and atomic persistence
-- `bm.query`: immutable filter values and list/search row logic
-- `bm.netscape`: pure Netscape HTML import/export conversion
-- `bm.importing`: best-effort browser-import execution and structured counts
-- `bm.exporting`: browser/pipeline serializers that write to explicit streams
-- `bm.backup`: versioned exact-content backups, stream output, and restore preflight/execution
-- `bm.doctor`: read-only bookmark health diagnostics using the same parser and path rules
-- `bm.dedupe`: pure merge rules, typed preview plans, and conflict-aware execution
-- `bm.urls`: shared URL inspection; each operation retains its own accept/preserve/open policy
-- `bm.git` and `bm.editor`: hardened Git execution/diagnostics and platform-specific editor launching
-
-Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.
 
 ---
 
@@ -278,13 +224,30 @@ embedded whitespace are rejected without writing a bookmark.
 printf '%s\n' 'https://example.com/docs' | bm add - --name "Docs" --tags dev
 ```
 
-Stdin is never read unless requested. This does not fetch a title or access the clipboard.
+Stdin is never read unless requested. Plain URL and stdin capture do not access the clipboard
+or fetch a title. To explicitly capture a copied URL instead:
 
 ```bash
-bm add <url> [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
+bm add --clipboard --name "Docs" --tags dev
+bm add --clipboard --edit              # Review title, tags, and notes before saving
 ```
 
-Prints the stable ID on success.
+`--clipboard` replaces the URL argument; it cannot be combined with a URL or `-`. It accepts
+one structurally valid `http`, `https`, `ftp`, `ftps`, or `mailto` URL, trimming surrounding
+whitespace. Empty text, batches, embedded whitespace, and unsupported/malformed URLs are
+rejected before writing. No title is fetched. See [clipboard setup](docs/setup.md#clipboard-setup).
+
+```bash
+bm add (<url>|--clipboard) [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
+```
+
+Prints the stable ID on success. If an equivalent normalized URL exists at another path,
+prints an advisory warning on stderr with the existing paths and show/open guidance.
+Duplicates remain allowed: no prompt, merge, or change to stdout/exit status. The existing
+bookmarks are left unchanged. Matching uses the same heuristic as `dedupe` (including
+ignoring HTTP/HTTPS differences and fragments), not a guarantee of identical content.
+Same-path collisions still fail unless `--force` explicitly replaces that destination.
+The best-effort metadata scan is not a uniqueness lock; concurrent adds can race.
 
 ### `list`
 
@@ -311,39 +274,67 @@ bm search <terms...> [-t TAG] [--host HOST] [--since ISO|YYYY-MM-DD] [--path PRE
 - `--field {title,url,tags,body}` restricts the scope; repeat to search multiple fields.
 - Exits **0** when at least one match is printed, **1** when there are no matches (so `bm search foo && open …` works as expected).
 
-### `pick`
-
-Select a bookmark interactively using an optional system installation of `fzf`:
-
-```bash
-bm pick                                # Fuzzy-select and open in your browser
-bm pick --tag dev --host example.com
-bm pick --path dev/python --since 2025-01-01 --print url
-bm pick --print id                      # Print only the stable ID; do not open anything
-```
-
-Supports the same tag/host/path/since filters as `list`. The picker shows path, title,
-and URL, with control characters sanitized for display. The selection opens under the
-same URL-scheme safeguards as `bm open`; `--print id|url` never opens a browser.
-`fzf` is not a Python dependency. Missing `fzf` gives installation guidance (exit 2).
-No initial matches exit 1 without launching it; fzf no-match/cancel exits 1/130 quietly.
-Failures or invalid selections exit 2 without opening anything.
-
-Picker invocations ignore `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` so user-defined
-shell bindings/previews cannot run unexpectedly or change the selection protocol.
-No shell command is constructed from bookmark data. Existing JSON/JSONL pipelines remain
-the noninteractive interface. See `bm pick --help` for filters.
-
 ### `show` and `open`
 
-Display metadata/notes or open the URL in your default browser:
+Display metadata/notes, open a known bookmark directly, or choose one interactively:
 
 ```bash
 bm show <ID|path>
-bm open <ID|path> [--allow-scheme]
+bm open <ID|path>                       # Direct lookup; no fzf or terminal required
+bm open                                # Choose a bookmark, then open it
+bm open --search "python async"         # Search first, then choose a result
+bm open --search python --tag dev --copy # Choose a matching URL to copy instead
+bm open --tag dev --host example.com
+bm open --path dev/python --since 2025-01-01 --print url
+bm open dev/docs --print url            # Print a known URL without opening or selecting
 ```
 
-`open` accepts `http`, `https`, `ftp`, `ftps`, and `mailto` URLs by default. Use `--allow-scheme` only when you intend to pass another scheme to the operating system.
+An ID/path always uses existing bookmark resolution, never full-text search. A missing or
+ambiguous bookmark is an error, not a fallback to selection. Use `--search QUERY` explicitly;
+quote multiple terms. An ID/path cannot be combined with `--search` or selection filters.
+`bm search` remains the noninteractive command for printing results and JSON/JSONL pipelines.
+
+Without an ID/path, `open` requires terminals on **stdin and stderr** and an optional system
+installation of `fzf`. Redirected stdin or stderr fails with guidance (exit 2), without
+starting fzf. Stdout can be redirected for `--print`. Direct ID/path opening, copying, and
+printing need neither a terminal nor fzf.
+
+Selection supports the same tag/host/path/since filters as `list`. `--search` uses the same
+case-insensitive substring-AND matching as ordinary `search`, including notes. The query and
+filters narrow candidates before fzf starts; typing in fzf then fuzzy-matches visible
+path/title/URL, not hidden notes. With no query, candidates are recent-first. Even a single
+match requires confirmation; no first result is opened automatically.
+
+The default action opens the chosen URL in your default browser and prints it to stdout.
+`--copy` copies its URL instead; `--print id|url` prints only that field. These options are
+mutually exclusive, work for both direct lookup and selection, and never open a browser.
+Cancellation opens and copies nothing. Missing fzf gives installation guidance (exit 2).
+No initial matches exit 1 without launching it; fzf no-match/cancel exits 1/130 quietly.
+Other fzf failures or invalid selections exit 2. Notices and errors do not pollute stdout.
+
+Opening accepts `http`, `https`, `ftp`, `ftps`, and `mailto` schemes by default. Use
+`bm open <ID|path> --allow-scheme` only when intentionally opening another scheme.
+`--allow-scheme` is rejected for interactive selection, copying, and printing.
+
+Interactive opening ignores `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE` so user-defined
+shell bindings/previews cannot run unexpectedly or change the selection protocol. Display
+control characters are sanitized, and no shell command is constructed from bookmark data.
+See `bm open --help`. The unreleased `pick` command has been folded into `open`; no alias is
+retained.
+
+### `copy`
+
+Copy a stored URL without opening a browser or changing the bookmark:
+
+```bash
+bm copy <ID|path>
+bm open --search python --copy         # Search and choose when you don't know the path
+```
+
+Success leaves stdout empty and prints `Copied URL to clipboard.` on stderr. Copy uses the
+stored URL as text (even for a nonstandard scheme), not notes or metadata; it does not execute
+or open it. Missing/ambiguous entries and missing URLs fail without touching the clipboard.
+Clipboard-helper failures exit 2; see [clipboard setup](docs/setup.md#clipboard-setup).
 
 ### `edit`, `rm`, `mv`
 
@@ -352,6 +343,9 @@ bm edit <ID|path>   # bumps modified timestamp
 bm rm <ID|path>
 bm mv <SRC> <DST> [-f]
 ```
+
+`rm` permanently deletes the bookmark file; there is no trash or built-in undo. Recovery
+requires an existing Git snapshot or [complete backup](docs/backup-format.md).
 
 ### `tags` and `tag add|rm`
 
@@ -430,7 +424,9 @@ for scope and recovery steps.
 ### `export` and `import`
 
 **Plain export is a complete, lossless bookmark backup.** Import recognizes backups and
-Netscape browser HTML automatically.
+Netscape browser HTML automatically. See the
+[browser migration guide](docs/browser-migration.md) for Chrome, Firefox, Safari, and Edge
+export recipes and a reproducible import-preview example.
 
 ```bash
 bm export -o bookmarks.json             # Safely create a new backup file
@@ -515,167 +511,15 @@ Common JSON schema fields: `id`, `path`, `title`, `url`, `tags`, `created`, `mod
 
 ---
 
-## Integration recipes
-
-**fzf launcher**
-
-With `fzf` installed, no wrapper or `jq` dependency is required:
-
-```bash
-bm pick
-bm pick --tag dev --print url
-```
-
-**Open the latest saved from a host**
-
-```bash
-id="$(bm list --host example.com --jsonl | head -1 | jq -r '.id')"
-if [ -n "$id" ]; then
-    bm open "$id"
-fi
-```
-
-**Rofi launcher**
-
-```bash
-#!/bin/sh
-choice="$(
-    bm list --jsonl |
-    jq -r '.id + "\t" + .title + " — " + .url' |
-    rofi -dmenu -i -p "bm"
-)"
-if [ -n "$choice" ]; then
-    bm open "$(printf "%s" "$choice" | cut -f1)"
-fi
-```
-
-Save as `bm-rofi.sh`, make it executable (`chmod +x bm-rofi.sh`), and bind it to a hotkey. The
-tab delimiter keeps IDs intact even when titles contain spaces; rofi shows the full title and URL
-while `bm open` receives only the bookmark ID.
-
-**dmenu launcher**
-
-```bash
-#!/bin/sh
-choice="$(
-    bm list --jsonl |
-    jq -r '.id + "\t" + .title + " — " + .url' |
-    dmenu -l 15 -i -p "bm"
-)"
-if [ -n "$choice" ]; then
-    bm open "$(printf "%s" "$choice" | cut -f1)"
-fi
-```
-
-You can adjust `-l 15` to change the number of visible rows. Because the script uses tabs between
-the ID and the description, `cut -f1` reliably extracts the ID even when titles or URLs contain
-spaces.
-
-**Bulk tag HN links**
-
-```bash
-bm list --host news.ycombinator.com --jsonl |
-jq -r '.id' |
-while IFS= read -r id; do
-    [ -n "$id" ] && bm tag add "$id" hn
-done
-```
-
-**List bookmarks in a specific category**
-
-```bash
-bm list --path dev/python
-bm search "framework" --path dev
-```
-
-**Explore directory structure**
-
-```bash
-bm dirs
-bm dirs --json | jq
-```
-
-**Export → browser import**
-
-```bash
-bm export netscape > ~/Desktop/bookmarks.html
-# Import that file in your browser’s bookmarks manager
-```
-
-**Sync with Syncthing**
-
-For cross-device synchronization without Git, use [Syncthing](https://syncthing.net/) to sync your bookmark store:
-
-1. Install Syncthing on all devices.
-2. Add your bookmark store directory (`~/.bookmarks.d` or `$BOOKMARKS_DIR`) as a synced folder in Syncthing.
-3. Configure devices to share the folder bidirectionally.
-4. Syncthing will keep your bookmarks in sync across devices automatically.
-
-**Auto-export for browser import**
-
-To automatically export bookmarks to Netscape HTML for browser import:
-
-```bash
-#!/bin/bash
-# auto_export.sh
-bm export netscape > ~/bookmarks_auto.html
-echo "Bookmarks exported to ~/bookmarks_auto.html. Import this file in your browser."
-```
-
-Run this script periodically or on demand to generate an up-to-date bookmark file for browser import.
-
----
-
 ## Configuration
 
-- **Store directory**: set `BOOKMARKS_DIR`, or place the global option before the command: `bm --store PATH <command>`
-- **Editor**: `VISUAL` or `EDITOR` (supports commands like `code --wait`)
-- **Debug**: set `BM_DEBUG=1` to re-raise unexpected exceptions with a full traceback (otherwise printed as a one-line `bm: <Type>: <msg>` to stderr with exit code 2)
+- **Store directory**: set `BOOKMARKS_DIR`, or use `bm --store PATH <command>`.
+- **Editor**: set `VISUAL` or `EDITOR` (supports commands like `code --wait`).
+- **Debug**: set `BM_DEBUG=1` to re-raise unexpected exceptions with a full traceback
+  (otherwise printed as a one-line `bm: <Type>: <msg>` to stderr with exit code 2).
 
-### Shell completion
-
-Completion is optional and uses [argcomplete](https://github.com/kislyuk/argcomplete).
-Install the extra with your chosen installer:
-
-```bash
-pip install 'bkmrk[completion]'
-# Or, for an isolated CLI installation:
-pipx install 'bkmrk[completion]'
-# Or:
-uv tool install 'bkmrk[completion]'
-```
-
-The registration helper must run in the same environment as `bm`. With pipx, expose
-its helper commands using `pipx install --include-deps 'bkmrk[completion]'` instead;
-with uv, use `uv tool install --with-executables-from argcomplete 'bkmrk[completion]'`.
-
-For Bash, add this to `~/.bashrc`:
-
-```bash
-eval "$(register-python-argcomplete --shell bash bm)"
-```
-
-For Zsh, add this to `~/.zshrc` (omit `compinit` if your configuration already runs it):
-
-```zsh
-autoload -Uz compinit
-compinit
-eval "$(register-python-argcomplete --shell zsh bm)"
-```
-
-Start a new shell (or reload its configuration), then type `bm se` and press Tab to
-complete `search`. This registers only `bm`; global completion activation is not required.
-These instructions cover Bash and Zsh, not PowerShell.
-
-### Windows notes
-
-- Bookmark paths accept `/` or `\\` separators on every platform. Commands and JSON/Netscape exports use `/` for consistent logical paths; store and import-file locations remain native filesystem paths.
-- Absolute, drive-qualified (including `C:relative`), and parent-traversal bookmark paths are rejected before normalization.
-- CI runs the full test suite on Linux, macOS, and Windows with Python 3.12 (the minimum) and 3.15.
-- Normalized bookmark filenames are checked for reserved device names (such as `CON`, `NUL`, and `COM1`) and unsupported components on Windows. Invalid imported folder paths are reported and skipped; valid entries still import. Existing POSIX filenames and URL-derived bookmark IDs are unchanged.
-- The default Windows editor is Notepad. Set `VISUAL` or `EDITOR` to an executable and arguments, using Windows double quotes around paths with spaces. Use the editor's blocking mode (for example, `$env:EDITOR = 'code.cmd --wait'`) so editing finishes before `bm` saves the result. `VISUAL` takes precedence over `EDITOR`.
-- Windows `.cmd`/`.bat` editor launchers are supported with quoted arguments and shell expansion disabled. Arguments or paths containing double quotes, `%`, `!`, or line breaks are rejected for batch launchers; use a native `.exe` editor for those paths. Native editor launches do not use a shell.
-- Atomic replacement and no-clobber operations use the corresponding Windows filesystem APIs. Long-path limits and filesystem capabilities still apply.
+See [setup and platform notes](docs/setup.md) for clipboard helpers, optional shell
+completion, fzf selection, and Windows editor/path behavior.
 
 ---
 
@@ -696,43 +540,26 @@ These instructions cover Bash and Zsh, not PowerShell.
 
 ---
 
+## Guides
+
+- [Setup and platform notes](docs/setup.md): clipboard, completion, fzf, and Windows.
+- [Integration recipes](docs/integrations.md): launchers, bulk tagging, and synchronization.
+- [Browser migration](docs/browser-migration.md): export from a browser and preview an import.
+- [Backup and recovery](docs/backup-format.md): exact-content backups and restore guarantees.
+- [Store diagnostics](docs/store-diagnostics.md): read-only health checks and recovery advice.
+- [Compatibility policy](docs/compatibility.md): file preservation and CLI contracts.
+- [Terminal walkthrough](docs/terminal-demo.md): a reproducible disposable-store demo.
+
+---
+
 ## Development
 
-```bash
-# syntax check
-python3 -m compileall src
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, module boundaries,
+and safe disposable-store experiments. File preservation and CLI evolution follow the
+[compatibility policy](docs/compatibility.md).
 
-# lint and format checks (install the dev extra first when needed)
-ruff check .
-ruff format --check .
-
-# test suite
-python3 -m pytest -q
-```
-
-For a reproducible development environment with uv:
-
-```bash
-uv sync --locked --extra dev --extra build --python 3.15
-uv run --locked --extra dev ruff check .
-uv run --locked --extra dev ruff format --check .
-uv run --locked --extra dev pytest
-uv build
-uv run --locked --extra build twine check --strict dist/*
-```
-
-The lockfile includes development and build tools; the runtime remains standard-library-only.
-The project applies a three-day release-age cooldown to dependency resolution in both local and CI runs.
-Keep the pinned Ruff version in `pyproject.toml` and `prek.toml` synchronized when updating it.
-CI checks package builds and metadata without publishing. Release publishing remains a separate,
-explicitly authorized action.
-
-### Roadmap
-
-The tracked [0.4.0 roadmap](docs/roadmap-0.4.0.md) focuses on lossless backup and
-restore, store diagnostics, easier daily capture, cross-platform packaging, and a secure
-browser integration. It also records open product and compatibility decisions before they
-change public behavior.
+Browser integration is deferred to avoid maintaining an extension; browser opening and
+HTML import/export remain supported.
 
 ---
 
