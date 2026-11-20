@@ -20,11 +20,10 @@ when inspecting the bookmark file or Git diff.
 5. Read the underlying `.bm` file directly with Python.
 6. Inspect the new file with `git diff`, without committing or contacting a remote.
 
-These are actual command outputs from the current working-tree wheel, with paced prompts
-and pauses added for readability. Temporary paths are replaced with `$DEMO`; no interactive
-keystrokes or personal environment variables are recorded. The wheel still reports version
-0.3.1 because the version has not been bumped: this is an unreleased working-tree demo,
-**not** a claim that all shown features are in the published 0.3.1 package.
+These are actual command outputs from a development wheel recorded before the 0.4.0 bump,
+with paced prompts and pauses added for readability. Temporary paths are replaced with
+`$DEMO`; no interactive keystrokes or personal environment variables are recorded. The wheel
+reports 0.3.1, but the published 0.3.1 package does not include all the features shown.
 
 The install step includes uv's harmless cross-filesystem hard-link warning: it fell back
 to copying and installed successfully. It is unrelated to bm's no-clobber bookmark writes.

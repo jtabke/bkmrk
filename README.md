@@ -89,8 +89,8 @@ Most bookmark tools are databases or browser‑locked. `bm` chooses **text first
 
 ## Install
 
-Requires Python >=3.12. The next release drops support for Python 3.8–3.11;
-users on those versions should stay on an older compatible release. Install from PyPI:
+Starting with 0.4.0, bkmrk requires Python 3.12 or newer. On Python 3.8–3.11,
+install `bkmrk==0.3.1` instead. Install from PyPI:
 
 ```bash
 pip install bkmrk
