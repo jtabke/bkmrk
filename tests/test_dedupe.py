@@ -275,6 +275,38 @@ url: http://example.com
         assert payload[0]["dry_run"]
 
 
+def test_changed_url_between_header_scan_and_snapshot_never_merges(
+    store, write_bm, monkeypatch, capsys
+):
+    first = write_bm("one", url="https://one.example", body="first")
+    second = write_bm("two", url="https://one.example", body="second")
+    before = first.read_bytes()
+    replacement = build_text({"url": "https://changed.example"}, "changed").encode()
+    read = Store.read_entry
+
+    def change_then_load(self, path, **kwargs):
+        if path == second:
+            path.write_bytes(replacement)
+        return read(self, path, **kwargs)
+
+    monkeypatch.setattr(Store, "read_entry", change_then_load)
+    assert main(["--store", str(store), "dedupe"]) == 1
+    assert "changed during dedupe scan" in capsys.readouterr().err
+    assert first.read_bytes() == before and second.read_bytes() == replacement
+
+
+def test_dedupe_skips_undecodable_candidate_without_changing_it(store, write_bm, capsys):
+    first = write_bm("first", url="https://example.com", body="first")
+    damaged = write_bm("damaged", url="https://example.com", body="other notes")
+    damaged.write_bytes(damaged.read_bytes() + b"\xff")
+    before = {path: path.read_bytes() for path in (first, damaged)}
+    assert main(["--store", str(store), "dedupe", "--json"]) == 0
+    output = capsys.readouterr()
+    assert output.out.strip() == "[]"
+    assert "damaged" in output.err and "bm doctor" in output.err
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_preview_collections_are_detached_from_execution_plan(tmp_path):
     store = Store(tmp_path / "store")
     store.create()

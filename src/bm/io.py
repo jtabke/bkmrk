@@ -11,7 +11,7 @@ from io import TextIOWrapper
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .errors import ConflictError
+from .errors import BmError, ConflictError
 from .models import FM_END, FM_START, Metadata
 
 # Compatibility alias for callers that imported the old persistence exception.
@@ -201,6 +201,18 @@ def parse_front_matter(
     return _normalize_meta(meta), body.lstrip("\r\n")
 
 
+def parse_for_rewrite(raw: bytes, path: Path) -> tuple[Metadata, str]:
+    """Never turn an undecodable byte into a replacement character in a saved file."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BmError(
+            f"{path} is not valid UTF-8; not saving this bookmark. "
+            "Check the encoding in your editor or run 'bm doctor'."
+        ) from exc
+    return parse_front_matter(text)
+
+
 def _fmt_tag(t: str) -> str:
     """Quote special tags; the list renderer marks any necessary JSON escaping."""
     if not t or any(char.isspace() or char in ",\\\"'" for char in t):
@@ -247,7 +259,8 @@ def _read_meta_only(fpath: Path) -> str:
     with open(fpath, "rb") as f:
         first = f.readline()
         if first.rstrip(b"\r\n") != b"---":
-            return (first + f.read()).decode("utf-8", errors="replace")
+            # Legacy entries have at most a URL on the first line; the rest is notes.
+            return first.decode("utf-8", errors="replace")
 
         lines = [first]
         for line in f:
@@ -315,7 +328,7 @@ def _write_temp(fd: int, data: str | bytes) -> None:
             binary_stream.flush()
             os.fsync(binary_stream.fileno())
     else:
-        with os.fdopen(fd, "w", encoding="utf-8") as text_stream:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as text_stream:
             text_stream.write(data)
             text_stream.flush()
             os.fsync(text_stream.fileno())

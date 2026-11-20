@@ -23,11 +23,14 @@ an existing file before `bm` runs; prefer `-o` for backups.
 `export netscape` and `export json` / `--jsonl` retain their existing formats and filters.
 They also support safe file output, for example `bm export json -o metadata.json` and
 `bm export netscape -o bookmarks.html`. `-o` works before or after the format name.
-Serializers write directly to stdout or a same-directory temporary file; JSONL keeps
-record-by-record streaming in both cases. Publication occurs only after serialization
-and file fsync succeed. Backup and sorted-array exports still collect their records to
-validate and order the document before writing it.
-They are interchange/pipeline exports, not lossless backups. Complete backups have no
+JSONL streams one record at a time; the sorted pipeline JSON array collects metadata
+rows. These are interchange formats, not lossless backups.
+
+Complete backup sorts filenames, then reads and serializes one bookmark at a time.
+For stdout, the document is spooled first (using temporary disk space for larger
+archives), so even a late invalid bookmark produces no partial output. With `-o`,
+the same-directory temporary file is the spool; publication follows successful
+serialization and file fsync. Complete backups have no
 filter options and need no additional top-level commands.
 
 ## Version 1 contract

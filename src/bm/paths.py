@@ -88,6 +88,31 @@ def id_to_path(store: Path, slug: str) -> Path:
     return fpath
 
 
+# Stripping .bm from a name such as ".bm" or "..bm" would give an empty
+# or all-dot token. Keep the full name for the entire family (including
+# ".bm.bm") so two supported files can never be displayed under the same token.
+_DOT_BOOKMARK_NAME = re.compile(r"\.*(?:\.bm)+")
+
+
+def bookmark_token(relative: Path) -> Path:
+    """Return the literal lookup token to display for a store-relative bookmark."""
+    return relative if _DOT_BOOKMARK_NAME.fullmatch(relative.name) else relative.with_suffix("")
+
+
+def bookmark_filename(token: str) -> str:
+    """Invert bookmark_token for a validated slash-separated path."""
+    return token if _DOT_BOOKMARK_NAME.fullmatch(token.rsplit("/", 1)[-1]) else token + FILE_EXT
+
+
+def validate_bookmark_name(name: str) -> None:
+    """Validate an exact store-relative filename before filesystem access."""
+    if not name or "\\" in name or reject_unsafe(name) != name or not name.endswith(FILE_EXT):
+        raise UnsafePathError(f"unsafe bookmark path: {name!r}")
+    reject_reserved_namespace(name)
+    if sys.platform == "win32":
+        reject_windows_names(name)
+
+
 def normalize_path_prefix(value: Optional[str]) -> str:
     """Normalize separators and remove surrounding slashes from a path filter."""
     return value.replace("\\", "/").strip("/") if value else ""

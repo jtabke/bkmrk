@@ -1,10 +1,12 @@
 """URL structure inspection and explicit per-operation policies."""
 
+import json
 from unittest.mock import patch
 
 import pytest
 
 from bm.backup import apply_restore, plan_restore
+from bm.cli import main
 from bm.commands import _open_url
 from bm.doctor import inspect_store
 from bm.errors import BmError
@@ -38,6 +40,48 @@ def test_inspect_url(url, supported, problem):
         assert inspection.problem is None
     else:
         assert problem in inspection.problem
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["list", "--json"],
+        ["search", "example", "--jsonl"],
+        ["export", "json"],
+        ["export", "json", "--jsonl"],
+        ["export", "netscape"],
+    ],
+)
+def test_bad_urls_do_not_abort_host_filtered_scans(store, write_bm, capsys, args):
+    write_bm("keep", url="https://example.com/good")
+    write_bm("broken", url="https://[broken")
+    write_bm("bad-port", url="https://example.com:bad")
+    assert main(["--store", str(store), *args, "--host", "example.com"]) == 0
+    output = capsys.readouterr()
+    assert "https://example.com/good" in output.out
+    assert "bad-port" not in output.out and "broken" not in output.out
+    assert "skipping bad-port" in output.err and "skipping broken" in output.err
+
+
+def test_dedupe_continues_past_bad_urls_and_keeps_their_bytes(store, write_bm, capsys):
+    damaged = {
+        write_bm(name, url=url)
+        for name, url in [
+            ("broken", "https://[broken"),
+            ("bad-a", "https://example.com:bad"),
+            ("bad-b", "https://example.com:bad"),
+        ]
+    }
+    originals = {path: path.read_bytes() for path in damaged}
+    for name in ("one", "two"):
+        write_bm(name, url="https://good.example")
+    for flags in (["--dry-run"], []):
+        assert main(["--store", str(store), "dedupe", "--json", *flags]) == 0
+        output = capsys.readouterr()
+        assert [a["canonical_url"] for a in json.loads(output.out)] == ["good.example"]
+        assert all(f"skipping {path.stem}" in output.err for path in damaged)
+    assert len(list(store.glob("*.bm"))) == 4
+    assert {path: path.read_bytes() for path in originals} == originals
 
 
 @pytest.mark.parametrize("allow_scheme", [False, True])

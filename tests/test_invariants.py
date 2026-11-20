@@ -99,6 +99,79 @@ def test_inward_symlink_cannot_bypass_reserved_namespace(tmp_path):
     assert not list(metadata.iterdir())
 
 
+def test_restored_list_paths_select_the_literal_file_for_reads_and_mutations(tmp_path, capsys):
+    root = tmp_path / "restored"
+    records = [
+        {"path": f"shelf/{name}", "content": build_text({"url": f"https://example.com/{n}"}, "")}
+        for n, name in enumerate(
+            (
+                "My Notes!.bm",
+                "my-notes.bm",
+                " trailing space .bm",
+                ".bm",
+                ".bm.bm",
+                "..bm",
+                "..bm.bm",
+            )
+        )
+    ]
+    archive = tmp_path / "backup.json"
+    archive.write_text(json.dumps({"format": "bm-backup", "version": 1, "entries": records}))
+
+    def run(*args):
+        return main(["--store", str(root), *args])
+
+    assert run("import", str(archive)) == 0
+    capsys.readouterr()
+    assert run("list", "--json") == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len({row["path"] for row in rows}) == len(rows) == len(records)
+    for row in rows:
+        assert run("list", "--path", row["path"], "--json") == 0
+        assert json.loads(capsys.readouterr().out) == [row]
+        assert run("open", "--print", "url", "--", row["path"]) == 0
+        assert capsys.readouterr().out.strip() == row["url"]
+
+    normalized = root / "shelf/my-notes.bm"
+    original = normalized.read_bytes()
+    assert run("tag", "add", "--", "shelf/My Notes!", "read") == 0
+    assert load_entry(root / "shelf/My Notes!.bm")[0]["tags"] == ["read"]
+    assert run("rm", "shelf/My Notes!") == 0
+    assert not (root / "shelf/My Notes!.bm").exists()
+    assert normalized.read_bytes() == original
+    # With no literal file, legacy normalized lookup still works.
+    assert run("open", "shelf/My Notes!", "--print", "url") == 0
+    assert capsys.readouterr().out.strip() == "https://example.com/1"
+
+
+@pytest.mark.parametrize("action", ["tag", "edit", "add"])
+def test_parsed_rewrites_never_commit_invalid_utf8(store, capsys, monkeypatch, action):
+    path = store / "entry.bm"
+    valid = b"---\nurl: https://example.com\n---\nnotes\n"
+    damaged = valid + b"damage: \xff\n"
+    before = valid if action == "add" else damaged
+    path.write_bytes(before)
+    monkeypatch.setattr("bm.commands.launch_editor", lambda temp: temp.write_bytes(damaged))
+
+    def run(*args):
+        return main(["--store", str(store), *args])
+
+    if action != "add":
+        assert run("show", "entry") == 0
+        assert "\ufffd" in capsys.readouterr().out
+    args = {
+        "edit": ["edit", "entry"],
+        "tag": ["tag", "add", "entry", "read"],
+        "add": ["add", "https://new.example", "--id", "entry", "--edit", "--force"],
+    }
+    assert run(*args[action]) == 1
+    output = capsys.readouterr()
+    assert not output.out
+    assert "entry.bm" in output.err and "UTF-8" in output.err and "bm doctor" in output.err
+    assert path.read_bytes() == before
+    assert list(store.iterdir()) == [path]
+
+
 def test_tag_rewrite_preserves_quotes_unknown_metadata_and_body(tmp_path):
     store = Store(tmp_path / "store")
     store.create()

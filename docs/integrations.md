@@ -59,13 +59,17 @@ You can adjust `-l 15` to change the number of visible rows. Because the script 
 the ID and the description, `cut -f1` reliably extracts the ID even when titles or URLs contain
 spaces.
 
-**Bulk tag HN links**
+### Bulk tag HN links
+
+Use the listed path rather than the ID: it selects the exact bookmark even when IDs
+are shared and avoids another store-wide lookup for every tag update. This example
+uses Bash for NUL-delimited reads, so spaces and newlines in paths are preserved.
 
 ```bash
 bm list --host news.ycombinator.com --jsonl |
-jq -r '.id' |
-while IFS= read -r id; do
-    [ -n "$id" ] && bm tag add "$id" hn
+jq -j '.path, "\u0000"' |
+while IFS= read -r -d '' path; do
+    bm tag add -- "$path" hn
 done
 ```
 

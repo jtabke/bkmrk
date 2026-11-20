@@ -44,7 +44,7 @@ def write_netscape(
     """Write browser HTML to the provided stream, keeping scan warnings separate."""
     entries = []
     for entry in store.iter_entries(meta_only=True, path_prefix=filters.path, on_error=on_error):
-        if not passes_filters(entry.relative_path, entry.meta, filters):
+        if not passes_filters(entry.relative_path, entry.meta, filters, on_error=on_error):
             continue
         entries.append((entry.relative_path.as_posix(), entry.meta))
     html_body = build_netscape_tree(entries)
@@ -60,21 +60,15 @@ def write_json(
     on_error: Callable[[Path, Exception], None] | None = None,
 ) -> None:
     """Write path-sorted JSON or scan-order JSONL without buffering the latter."""
-    entries = store.iter_entries(meta_only=True, path_prefix=filters.path, on_error=on_error)
+    records = (
+        export_row(entry.relative_path, entry.meta)
+        for entry in store.iter_entries(meta_only=True, path_prefix=filters.path, on_error=on_error)
+        if passes_filters(entry.relative_path, entry.meta, filters, on_error=on_error)
+    )
     if jsonl:
-        # Stream NDJSON one row at a time; output is unsorted.
-        for entry in entries:
-            if not passes_filters(entry.relative_path, entry.meta, filters):
-                continue
-            stream.write(
-                json.dumps(export_row(entry.relative_path, entry.meta), ensure_ascii=False) + "\n"
-            )
+        for row in records:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
         return
-    rows = []
-    for entry in entries:
-        if not passes_filters(entry.relative_path, entry.meta, filters):
-            continue
-        rows.append(export_row(entry.relative_path, entry.meta))
-    rows.sort(key=lambda r: r["path"])
+    rows = sorted(records, key=lambda r: r["path"])
     json.dump(rows, stream, ensure_ascii=False)
     stream.write("\n")

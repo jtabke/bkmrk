@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Tuple, TypedDict
-from urllib.parse import urlparse
 
 from .models import Metadata, metadata_tags, metadata_text
 from .paths import matches_path_prefix
+from .urls import parse_stored_url
 from .utils import parse_iso, rid
 
 
@@ -46,7 +46,7 @@ def _matches_tag(rel: Path, meta: Metadata, tag: Optional[str]) -> bool:
 def _matches_host(meta: Metadata, want_host: str) -> bool:
     if not want_host:
         return True
-    host = urlparse(metadata_text(meta, "url")).netloc.lower()
+    host = parse_stored_url(metadata_text(meta, "url")).netloc.lower()
     if host.startswith("www."):
         host = host[4:]
     hq = want_host[4:] if want_host.startswith("www.") else want_host
@@ -60,14 +60,23 @@ def _matches_since(meta: Metadata, since_dt: Optional[datetime]) -> bool:
     return bool(ts and ts >= since_dt)
 
 
-def passes_filters(rel: Path, meta: Metadata, filters: FilterSpec) -> bool:
-    """Return whether an entry satisfies every configured filter."""
-    return (
-        _matches_tag(rel, meta, filters.tag)
-        and _matches_host(meta, filters.host)
-        and matches_path_prefix(rel, filters.path)
-        and _matches_since(meta, filters.since)
-    )
+def passes_filters(
+    rel: Path,
+    meta: Metadata,
+    filters: FilterSpec,
+    *,
+    on_error: Callable[[Path, Exception], None] | None = None,
+) -> bool:
+    """Return whether an entry matches, reporting a bad host only for host queries."""
+    if not matches_path_prefix(rel, filters.path) or not _matches_tag(rel, meta, filters.tag):
+        return False
+    try:
+        host_matches = _matches_host(meta, filters.host)
+    except ValueError as exc:
+        if on_error is not None:
+            on_error(rel, exc)
+        return False
+    return host_matches and _matches_since(meta, filters.since)
 
 
 def _build_row(rel: Path, meta: Metadata) -> QueryRow:
@@ -97,11 +106,16 @@ def sort_rows(rows: list[QueryRow]) -> list[QueryRow]:
     return rows
 
 
-def collect_rows(entries: Iterable[Tuple[Path, Metadata]], filters: FilterSpec) -> list[QueryRow]:
+def collect_rows(
+    entries: Iterable[Tuple[Path, Metadata]],
+    filters: FilterSpec,
+    *,
+    on_error: Callable[[Path, Exception], None] | None = None,
+) -> list[QueryRow]:
     """Build and sort list rows from relative paths and metadata."""
     rows = []
     for rel, meta in entries:
-        if not passes_filters(rel, meta, filters):
+        if not passes_filters(rel, meta, filters, on_error=on_error):
             continue
         rows.append(_build_row(rel, meta))
     return sort_rows(rows)

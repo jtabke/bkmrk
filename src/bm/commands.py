@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -13,23 +12,23 @@ from typing import TextIO, Tuple
 
 from .backup import apply_restore, plan_restore, read_backup, write_backup
 from .clipboard import read_clipboard, write_clipboard
-from .dedupe import DedupePlan, apply_dedupe, plan_dedupe
+from .dedupe import DedupePlan, apply_dedupe, duplicate_key, plan_dedupe
 from .doctor import inspect_store
 from .editor import launch_editor
 from .errors import BmError, NotFoundError
 from .exporting import write_json, write_netscape
+from .fzf import pick_row
 from .git import inspect_git, run_git
 from .importing import ImportCounts, import_netscape
-from .io import atomic_text_create, build_text, load_entry, parse_front_matter
+from .io import atomic_text_create, build_text, load_entry, parse_for_rewrite
 from .models import FILE_EXT, default_store, metadata_tags, metadata_text
-from .paths import normalize_slug, reject_unsafe
+from .paths import bookmark_token, normalize_slug, reject_unsafe
 from .query import SEARCH_FIELDS, FilterSpec, QueryRow, collect_rows, passes_filters, search_rows
 from .store import Store
 from .urls import ALLOWED_URL_SCHEMES, inspect_url
 from .utils import (
     create_slug_from_url,
     iso_now,
-    normalize_url_for_compare,
     parse_iso,
     rid,
 )
@@ -129,7 +128,7 @@ def _add_url(value: str | None, *, clipboard: bool = False) -> str:
 def _warn_existing_urls(store: Store, url: str, destination: Path) -> None:
     """Report advisory matches after saving without redefining bookmark identity."""
     try:
-        key = normalize_url_for_compare(url)
+        key = duplicate_key(url)
     except ValueError:
         return
     if not key:
@@ -139,7 +138,7 @@ def _warn_existing_urls(store: Store, url: str, destination: Path) -> None:
         if entry.path == destination:
             continue
         try:
-            existing_key = normalize_url_for_compare(metadata_text(entry.meta, "url"))
+            existing_key = duplicate_key(metadata_text(entry.meta, "url"))
         except ValueError:
             continue
         if existing_key == key:
@@ -186,7 +185,7 @@ def cmd_add(args) -> None:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(template)
             launch_editor(tmp)
-            meta2, body2 = parse_front_matter(tmp.read_text(encoding="utf-8", errors="replace"))
+            meta2, body2 = parse_for_rewrite(tmp.read_bytes(), fpath)
         finally:
             try:
                 tmp.unlink()
@@ -220,7 +219,7 @@ def cmd_show(args) -> None:
     """Show a bookmark entry."""
     store = _store_from_args(args)
     p = store.require_entry(args.id)
-    rel = p.relative_to(store.root).with_suffix("")
+    rel = bookmark_token(p.relative_to(store.root))
     print(f"# {rel.as_posix()}")
     meta, body = load_entry(p)
     for k in ["url", "title", "tags", "created", "modified"]:
@@ -330,7 +329,7 @@ def _collect_rows(store: Store, filters: FilterSpec) -> list[QueryRow]:
             on_error=_warn_skipped,
         )
     )
-    return collect_rows(entries, filters)
+    return collect_rows(entries, filters, on_error=_warn_skipped)
 
 
 def _output_rows(rows: list[QueryRow], args):
@@ -381,7 +380,7 @@ def _search_entries(store: Store, filters: FilterSpec, fields: Tuple[str, ...]):
         path_prefix=filters.path,
         on_error=_warn_skipped,
     ):
-        if not passes_filters(entry.relative_path, entry.meta, filters):
+        if not passes_filters(entry.relative_path, entry.meta, filters, on_error=_warn_skipped):
             continue
         body = entry.body
         if needs_body and not full_read:
@@ -415,55 +414,6 @@ def cmd_search(args) -> None:
         raise BmError(exit_code=1)
 
 
-def _pick_row(rows: list[QueryRow]) -> QueryRow:
-    """Exchange only sanitized display rows with fzf, never shell commands."""
-    choices = {}
-    for index, row in enumerate(rows):
-        display = "  ".join(str(row[key]) for key in ("path", "title", "url"))
-        display = "".join(
-            " " if ord(char) < 32 or 127 <= ord(char) < 160 else char for char in display
-        )
-        choices[f"{index}\t{display}"] = row
-    env = os.environ.copy()
-    # Custom fzf bindings/previews can execute shell commands or change its output
-    # protocol. Keep this narrowly scoped picker independent of those settings.
-    env.pop("FZF_DEFAULT_OPTS", None)
-    env.pop("FZF_DEFAULT_OPTS_FILE", None)
-    try:
-        result = subprocess.run(
-            [
-                "fzf",
-                "--no-multi",
-                "--delimiter=\\t",
-                "--with-nth=2..",
-                "--prompt=bm> ",
-                "--no-preview",
-            ],
-            input="\n".join(choices) + "\n",
-            stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=env,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise BmError(
-            "fzf is not installed; install fzf for interactive 'bm open', "
-            "or provide an ID/path to open directly",
-            exit_code=2,
-        ) from exc
-    except OSError as exc:
-        raise BmError(f"could not start fzf: {exc}", exit_code=2) from exc
-    if result.returncode in (1, 130):
-        raise BmError(exit_code=result.returncode)
-    if result.returncode:
-        raise BmError(f"fzf failed with exit status {result.returncode}", exit_code=2)
-    selection = result.stdout.rstrip("\r\n")
-    if selection not in choices:
-        raise BmError("fzf returned an invalid selection; no bookmark opened", exit_code=2)
-    return choices[selection]
-
-
 def _select_open_row(store: Store, args) -> QueryRow:
     """Select one filtered bookmark only when input and UI output are terminals."""
     if not sys.stdin.isatty() or not sys.stderr.isatty():
@@ -482,7 +432,7 @@ def _select_open_row(store: Store, args) -> QueryRow:
     )
     if not rows:
         raise BmError("no bookmarks match; use 'bm list' or adjust the search terms/filters")
-    return _pick_row(rows)
+    return pick_row(rows)
 
 
 def cmd_edit(args) -> None:
@@ -501,8 +451,7 @@ def cmd_edit(args) -> None:
         with os.fdopen(fd, "wb") as f:
             f.write(original)
         launch_editor(tmp)
-        edited = tmp.read_text(encoding="utf-8", errors="replace")
-        meta, body = parse_front_matter(edited)
+        meta, body = parse_for_rewrite(tmp.read_bytes(), p)
         if not metadata_text(meta, "url"):
             raise BmError("url cleared in editor")
         meta["modified"] = iso_now()
@@ -536,7 +485,7 @@ def cmd_mv(args) -> None:
         ) from exc
     except OSError as exc:
         raise BmError(f"move failed: {exc}") from exc
-    print(dst.relative_to(store.root).with_suffix("").as_posix())
+    print(bookmark_token(dst.relative_to(store.root)).as_posix())
 
 
 def cmd_tags(args) -> None:
@@ -556,9 +505,8 @@ def cmd_dirs(args) -> None:
     """List known directory prefixes."""
     store = _store_from_args(args)
     dirs = set()
-    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
-        # Add all parent directories
-        parts = entry.relative_path.parts
+    for path in store.iter_paths(on_error=_warn_skipped):
+        parts = path.relative_to(store.root).parts
         for i in range(1, len(parts)):
             dirs.add("/".join(parts[:i]))
     all_dirs = sorted(dirs)
@@ -654,7 +602,7 @@ def cmd_export(args) -> None:
 def _render_export(args, store: Store, stream: TextIO) -> None:
     """Serialize directly into a supplied stream, without redirecting global stdout."""
     if args.fmt is None:
-        write_backup(store, stream)
+        write_backup(store, stream, staged=getattr(args, "output", None) is not None)
         return
     filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":

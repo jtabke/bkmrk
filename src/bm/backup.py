@@ -3,6 +3,9 @@
 import io
 import json
 import os
+import shutil
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -18,22 +21,21 @@ BACKUP_FORMAT = "bm-backup"
 BACKUP_VERSION = 1
 
 
-def _backup_record(store: Store, relative: str) -> dict[str, str]:
+def _backup_content(store: Store, relative: str) -> str:
     """Read one exact-content record, refusing incomplete or unsafe backups."""
     path = store.exact_path(relative)
     if not path.is_file():
         raise BmError(f"bookmark is not a regular file: {relative!r}")
     try:
-        content = path.read_bytes().decode("utf-8")
+        return path.read_bytes().decode("utf-8")
     except UnicodeError as exc:
         raise BmError(f"bookmark is not valid UTF-8: {relative!r}") from exc
-    return {"path": relative, "content": content}
 
 
-def write_backup(store: Store, stream: TextIO) -> None:
-    """Serialize every bookmark, failing rather than silently skipping files."""
+def _backup_paths(store: Store) -> list[str]:
+    """Discover exact names, failing rather than silently skipping files."""
     store.require_exists()
-    records = []
+    paths = []
 
     def fail(exc: OSError) -> None:
         raise exc
@@ -53,21 +55,43 @@ def write_backup(store: Store, stream: TextIO) -> None:
                     f"bookmark in reserved namespace: {relative}; "
                     "move it outside Git metadata before backing up"
                 )
-            records.append(_backup_record(store, relative))
-    records.sort(key=lambda record: record["path"])
-    json.dump(
-        {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "entries": records},
-        stream,
-        ensure_ascii=False,
-        indent=2,
-    )
-    stream.write("\n")
+            paths.append(relative)
+    return sorted(paths)
+
+
+def _serialize_backup(store: Store, write: Callable[[str], object]) -> None:
+    """Write the v1 pretty-printed document holding only paths and one record at a time."""
+    paths = _backup_paths(store)
+    write(f'{{\n  "format": "{BACKUP_FORMAT}",\n  "version": {BACKUP_VERSION},\n  "entries": [')
+    for i, relative in enumerate(paths):
+        write(",\n" if i else "\n")
+        write('    {\n      "path": ')
+        write(json.dumps(relative, ensure_ascii=False))
+        write(',\n      "content": ')
+        write(json.dumps(_backup_content(store, relative), ensure_ascii=False))
+        write("\n    }")
+    write("\n  ]\n}\n" if paths else "]\n}\n")
+
+
+def write_backup(store: Store, stream: TextIO, *, staged: bool = False) -> None:
+    """Validate all content before publishing; reuse a caller's private output if staged."""
+    if staged:
+        _serialize_backup(store, stream.write)
+        return
+    # A late unreadable file must not leave a partial document on stdout. Spill
+    # larger archives to disk instead of holding every bookmark body in memory.
+    with tempfile.SpooledTemporaryFile(
+        max_size=1024 * 1024, mode="w+", encoding="utf-8", newline=""
+    ) as spool:
+        _serialize_backup(store, spool.write)
+        spool.seek(0)
+        shutil.copyfileobj(spool, stream)
 
 
 def build_backup(store: Store) -> str:
     """Return a backup string for embedding; CLI writers use the stream API."""
     stream = io.StringIO()
-    write_backup(store, stream)
+    write_backup(store, stream, staged=True)
     return stream.getvalue()
 
 

@@ -212,7 +212,26 @@ def test_metadata_only_reader_does_not_accept_lookalike_opening(tmp_path, openin
     path = tmp_path / "entry.bm"
     content = opening + b"url: https://example.com\n---\nnotes"
     path.write_bytes(content)
-    assert _read_meta_only(path) == content.decode("utf-8")
+    assert _read_meta_only(path) == opening.decode("utf-8")
+    full_meta, body = load_entry(path)
+    assert load_entry(path, meta_only=True) == (full_meta, "")
+    assert "url" not in full_meta and body == content.decode("utf-8")
+
+
+def test_legacy_metadata_scan_does_not_read_notes(tmp_path, monkeypatch):
+    import bm.io as io_mod
+
+    first = b"https://example.com/docs\n"
+    with BytesIO(first + b"legacy notes\n" * 1000) as stream:
+
+        @contextmanager
+        def guarded_open(path, mode):
+            yield stream
+
+        monkeypatch.setattr(io_mod, "open", guarded_open, raising=False)
+        meta, body = load_entry(tmp_path / "legacy.bm", meta_only=True)
+        assert meta["url"] == "https://example.com/docs" and body == ""
+        assert stream.tell() == len(first)
 
 
 def test_block_scalar_keys_are_not_duplicate_header_fields():
@@ -861,13 +880,18 @@ class TestAtomicWrite:
 
         fdopen = io_mod.os.fdopen
 
-        def ascii_default_fdopen(fd, mode, encoding=None):
-            return fdopen(fd, mode, encoding=encoding or "ascii")
+        def ascii_default_fdopen(fd, mode, encoding=None, **kwargs):
+            return fdopen(fd, mode, encoding=encoding or "ascii", **kwargs)
 
         monkeypatch.setattr(io_mod.os, "fdopen", ascii_default_fdopen)
         destination = tmp_path / "entry.bm"
         atomic_write(destination, "café")
         assert destination.read_bytes() == "café".encode("utf-8")
+
+    def test_text_rewrites_never_double_crlf(self, tmp_path):
+        destination = tmp_path / "entry.bm"
+        atomic_write(destination, "header\nnotes\r\n")
+        assert destination.read_bytes() == b"header\nnotes\r\n"
 
     def test_replacement_uses_same_directory_temporary_file(self, tmp_path, monkeypatch):
         """Replacement must not cross filesystems or expose a partial destination."""

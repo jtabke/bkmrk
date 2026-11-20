@@ -24,7 +24,11 @@ not a promise that every command preserves the original bytes.
   a file does not change the ID; changing the URL can. IDs are short hashes, not globally
   unique identifiers. Multiple files with the same URL share an ID. ID lookup rejects
   multiple matching entries rather than choosing the first: use an explicit path to
-  disambiguate. Existing exact-path and partial-name lookup precedence is unchanged.
+  disambiguate. Literal listed paths take priority over normalized slugs, partial
+  filenames, and stable IDs, in that order. This also applies to names restored from backups.
+  Paths normally omit the final `.bm`. For dot-only stems and their namesakes
+  (e.g. `.bm`, `..bm`, `.bm.bm`), the CLI displays and accepts the full filename
+  so the printed paths remain distinct and never require an empty or traversal token.
   Normalized-URL matching does not redefine ID generation.
 - Paths remain store-relative. Absolute paths, traversal, escapes, and the `.git` namespace
   are not supported bookmark destinations. Symlink and platform filename safeguards still
@@ -42,6 +46,10 @@ not a promise that every command preserves the original bytes.
 | Netscape import/export | Browser interchange, not complete metadata or notes preservation |
 | Explicit JSON/JSONL export | Pipeline metadata, not a restorable full backup |
 | Plain `export` and backup `import` | Exact paths and UTF-8 file content under the versioned [backup contract](backup-format.md) |
+
+Read-only views may display replacement characters for undecodable bytes. Tag changes,
+dedupe candidates, and edited text must decode as UTF-8 before a parsed rewrite.
+Repair encoding deliberately rather than relying on a rewrite to fix it.
 
 Complete backup preserves unknown fields, comments, whitespace, and line endings exactly.
 It covers `.bm` files, not Git history, other files, permissions, or filesystem timestamps.

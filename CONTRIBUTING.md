@@ -94,6 +94,7 @@ The implementation keeps the filesystem backend concrete and separates responsib
 - `bm.dedupe`: pure merge rules, typed preview plans, and conflict-aware execution
 - `bm.urls`: shared URL inspection; each operation retains its own accept/preserve/open policy
 - `bm.clipboard`: explicit text clipboard access through optional OS utilities
+- `bm.fzf`: sanitized display, subprocess protocol, and validation of an explicit selection
 - `bm.git` and `bm.editor`: hardened Git execution/diagnostics and platform-specific editor launching
 
 Embedding code can call `bm.cli.main([...])` and inspect the returned status without catching `SystemExit`. The console script and `python -m bm` wrappers convert that status to the process exit code. Argument-parser help and usage errors retain their standard 0/2 statuses.

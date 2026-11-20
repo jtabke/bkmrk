@@ -190,6 +190,7 @@ Longer notes, checklists, code blocks…
   `tags: json:["say\"hello", "C:\\new folder"]`. Only this marked form interprets JSON
   escapes. Ordinary lists remain readable, and rewrites preserve their tag values.
 - Parsed rewrites retain non-empty unknown fields, not original formatting or comments.
+  They refuse to save undecodable UTF-8 instead of replacing bytes in notes or metadata.
   Complete backups preserve exact UTF-8 content. See the
   [format and CLI compatibility policy](docs/compatibility.md) for operation-specific limits.
 
@@ -199,7 +200,8 @@ Each bookmark has a **stable ID** derived from its URL (BLAKE2b short hash). The
 
 Several files can share an ID, including separate bookmarks with the same URL. ID lookup
 reports ambiguity instead of choosing the first file; use a complete path to select one.
-Existing exact-path and partial-name lookup precedence is unchanged.
+A literal path printed by `list` is tried first, preserving spaces, case, and punctuation.
+If absent, lookup tries the normalized slug, then partial filename, then stable ID.
 
 ---
 
@@ -363,7 +365,7 @@ bm tag rm  <ID|path> tag1
 
 ### `dirs`
 
-List all known directory prefixes in the bookmark store.
+List directory prefixes of bookmark files without opening their contents.
 
 ```bash
 bm dirs [--json]
@@ -381,6 +383,9 @@ bm dedupe [--dry-run] [--json]
 
 - `--dry-run` prints the planned merges without modifying files
 - `--json` emits a machine-readable summary of the merge actions
+
+Dedupe groups by header URL first and reads full notes only for possible duplicates.
+Malformed URLs and unreadable candidates are skipped with a warning, not merged.
 
 Dedupe is not a whole-store transaction. A late conflict or I/O failure can leave earlier
 merges/deletions applied; the error makes this explicit and retains the failure status.
@@ -506,7 +511,9 @@ bm sync
 
 ## Filtering & output formats
 
-- `--host` matches the parsed URL authority exactly (case-insensitive, ignoring a leading `www.`). Include an explicit port when the saved URL has one.
+- `--host` matches the parsed URL authority exactly (case-insensitive, ignoring a leading
+  `www.`). Include an explicit port when the saved URL has one. A malformed stored URL is
+  skipped with a warning during host filtering; unfiltered listing and exact backup remain available.
 - `--path` filters by path prefix (e.g., `--path dev/python` shows only entries under that directory tree)
 - `--since` accepts `YYYY-MM-DD` or full ISO timestamps; comparisons are proper datetimes
 - `--json` emits a single JSON array; `--jsonl` outputs one JSON object per line (NDJSON)

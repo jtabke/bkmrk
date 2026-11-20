@@ -1,5 +1,6 @@
 """Tests for the concrete filesystem store boundary."""
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -56,6 +57,19 @@ def test_store_reports_ambiguous_fuzzy_resolution(tmp_path):
     assert "ambiguous" in message
     assert "prefix-suffix" in message
     assert "other-suffix" in message
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="literal POSIX backslash filename")
+def test_scans_do_not_offer_unsafe_names_as_lookup_tokens(tmp_path):
+    store = Store(tmp_path)
+    valid = store.path_for("nested/entry")
+    _write_entry(valid)
+    invalid = tmp_path / r"nested\entry.bm"
+    _write_entry(invalid, url="https://different.example")
+    warnings = []
+    assert list(store.iter_paths(on_error=lambda path, exc: warnings.append(str(exc)))) == [valid]
+    assert len(warnings) == 1 and "unsafe bookmark path" in warnings[0]
+    assert store.resolve(r"nested\entry") == valid
 
 
 def test_store_path_and_snapshot_boundary(tmp_path):

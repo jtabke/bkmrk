@@ -1,28 +1,32 @@
 """Concrete filesystem boundary for bookmark stores."""
 
-import sys
+import re
+import stat
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Generator, Optional, Union
 
-from .errors import AmbiguousEntryError, ConflictError, NotFoundError, UnsafePathError
+from .errors import AmbiguousEntryError, BmError, ConflictError, NotFoundError, UnsafePathError
 from .io import (
     atomic_create,
     atomic_move_no_replace,
     atomic_write,
     load_entry,
-    parse_front_matter,
+    parse_for_rewrite,
     verify_snapshot,
 )
 from .models import FILE_EXT, Metadata, metadata_text
 from .paths import (
+    bookmark_filename,
+    bookmark_token,
     id_to_path,
     matches_path_prefix,
     normalize_path_prefix,
     normalize_slug,
     reject_reserved_namespace,
     reject_unsafe,
-    reject_windows_names,
+    validate_bookmark_name,
 )
 from .utils import rid
 
@@ -92,14 +96,14 @@ class Store:
         """Build a safe store-relative bookmark path from user input."""
         return self._check_member(id_to_path(self.root, slug))
 
+    def _literal_path(self, name: str) -> Path:
+        """Validate the filename as written, without slug normalization."""
+        validate_bookmark_name(name)
+        return self._check_member(self.root / name)
+
     def exact_path(self, name: str) -> Path:
-        """Validate an exact bookmark filename without slug normalization or links."""
-        if not name or "\\" in name or reject_unsafe(name) != name or not name.endswith(FILE_EXT):
-            raise UnsafePathError(f"unsafe bookmark path: {name!r}")
-        reject_reserved_namespace(name)
-        if sys.platform == "win32":
-            reject_windows_names(name)
-        path = self._check_member(self.root / name)
+        """Validate an exact backup/restore path, including its no-links policy."""
+        path = self._literal_path(name)
         self.check_destination(path)
         return path
 
@@ -197,19 +201,27 @@ class Store:
             current.rmdir()
             current = current.parent
 
+    @staticmethod
+    def _require_file(checked: Path) -> Path:
+        if not stat.S_ISREG(checked.stat().st_mode):
+            raise UnsafePathError(f"not a regular bookmark file: {checked}")
+        return checked
+
     def read_entry(self, path: Path, *, snapshot: bool = False) -> StoreEntry:
-        """Load an entry, optionally retaining the exact bytes read."""
-        checked = self._check_member(path)
+        """Load an entry, strictly decoding snapshots intended for a rewrite."""
+        checked = self._require_file(self._check_member(path))
+        return self._load_checked(checked, meta_only=False, snapshot=snapshot)
+
+    def _load_checked(self, checked: Path, *, meta_only: bool, snapshot: bool) -> StoreEntry:
+        raw_snapshot = None
         if snapshot:
-            raw = checked.read_bytes()
-            meta, body = parse_front_matter(raw.decode("utf-8", errors="replace"))
-            raw_snapshot: Optional[bytes] = raw
+            raw_snapshot = checked.read_bytes()
+            meta, body = parse_for_rewrite(raw_snapshot, checked)
         else:
-            meta, body = load_entry(checked)
-            raw_snapshot = None
+            meta, body = load_entry(checked, meta_only=meta_only)
         return StoreEntry(
             path=checked,
-            relative_path=checked.relative_to(self.root).with_suffix(""),
+            relative_path=bookmark_token(checked.relative_to(self.root)),
             meta=meta,
             body=body,
             snapshot=raw_snapshot,
@@ -238,11 +250,42 @@ class Store:
                 yield from self.root.rglob(f"*{FILE_EXT}")
                 return
 
-        exact = self.root / (prefix + FILE_EXT)
+        exact = self.root / bookmark_filename(prefix)
         if exact.exists() or exact.is_symlink():
             yield exact
         if directory.is_dir():
             yield from directory.rglob(f"*{FILE_EXT}")
+
+    def _checked_paths(
+        self, paths: Iterable[Path], on_error: Callable[[Path, Exception], None] | None = None
+    ) -> Iterator[Path]:
+        for path in paths:
+            relative = path.relative_to(self.root)
+            try:
+                # A literal POSIX backslash, for instance, must not be displayed
+                # as a lookup token that would select a different bookmark.
+                checked = self._require_file(self._literal_path(relative.as_posix()))
+            except (OSError, UnsafePathError, ValueError) as exc:
+                if on_error is not None:
+                    on_error(bookmark_token(relative), exc)
+                continue
+            yield checked
+
+    def iter_paths(
+        self, *, path_prefix: str = "", on_error: Callable[[Path, Exception], None] | None = None
+    ) -> Iterator[Path]:
+        """Yield regular member paths, checking containment without opening bookmarks."""
+        if not self.exists():
+            return
+        prefix = normalize_path_prefix(path_prefix)
+        paths: Iterator[Path] = self._iter_paths(prefix)
+        if prefix:
+            paths = (
+                p
+                for p in paths
+                if matches_path_prefix(bookmark_token(p.relative_to(self.root)), prefix)
+            )
+        yield from self._checked_paths(paths, on_error)
 
     def iter_entries(
         self,
@@ -260,25 +303,12 @@ class Store:
         extensionless relative paths before file reads and avoids traversing
         unrelated directories when safe.
         """
-        if not self.exists():
-            return
-        prefix = normalize_path_prefix(path_prefix)
-        for path in self._iter_paths(prefix):
-            relative = path.relative_to(self.root).with_suffix("")
-            if prefix and not matches_path_prefix(relative, prefix):
-                continue
+        for path in self.iter_paths(path_prefix=path_prefix, on_error=on_error):
             try:
-                if snapshot:
-                    entry = self.read_entry(path, snapshot=True)
-                elif meta_only:
-                    checked = self._check_member(path)
-                    meta, _ = load_entry(checked, meta_only=True)
-                    entry = StoreEntry(checked, relative, meta, "")
-                else:
-                    entry = self.read_entry(path)
-            except (OSError, UnsafePathError, ValueError, UnicodeError) as exc:
+                entry = self._load_checked(path, meta_only=meta_only, snapshot=snapshot)
+            except (OSError, BmError, ValueError) as exc:
                 if on_error is not None:
-                    on_error(relative, exc)
+                    on_error(bookmark_token(path.relative_to(self.root)), exc)
                 continue
             yield entry
 
@@ -286,7 +316,7 @@ class Store:
         """Resolve one match or require an explicit path when lookup is ambiguous."""
         if len(matches) > 1:
             listing = "\n  ".join(
-                path.relative_to(self.root).with_suffix("").as_posix() for path in sorted(matches)
+                bookmark_token(path.relative_to(self.root)).as_posix() for path in sorted(matches)
             )
             raise AmbiguousEntryError(
                 f"ambiguous: {len(matches)} matches for {token!r}:\n  {listing}\n"
@@ -294,30 +324,48 @@ class Store:
             )
         return matches[0] if matches else None
 
+    def _id_matches(self, paths: Iterable[Path], token: str) -> list[Path]:
+        matches = []
+        # Validate each buffered name at read time, not just at discovery time.
+        for path in self._checked_paths(paths):
+            try:
+                meta, _ = load_entry(path, meta_only=True)
+            except (OSError, ValueError):
+                continue
+            url = metadata_text(meta, "url")
+            if url and rid(url) == token:
+                matches.append(path)
+        return matches
+
+    def _existing_file(self, name: str) -> Path | None:
+        path = self._literal_path(name)
+        try:
+            return self._require_file(path)
+        except (FileNotFoundError, NotADirectoryError):
+            if path.is_symlink():
+                raise UnsafePathError(f"broken bookmark link: {path}") from None
+            return None
+
     def resolve(self, token: str) -> Optional[Path]:
-        """Resolve an ID or path token using the existing command priority."""
+        """Prefer the literal listed path, then the legacy slug, partial name, and ID."""
+        logical = reject_unsafe(token)
+        literal = bookmark_filename(logical) if logical else ""
+        if literal and (exact := self._existing_file(literal)):
+            return exact
+
         token = token.strip()
-        slug = normalize_slug(reject_unsafe(token))
-        slug = reject_unsafe(slug)
-        exact = self.path_for(slug)
-        if exact.exists():
+        slug = reject_unsafe(normalize_slug(reject_unsafe(token)))
+        if slug + FILE_EXT != literal and (exact := self._existing_file(slug + FILE_EXT)):
             return exact
 
         name = Path(slug).name
-        fuzzy = []
-        for path in self.root.rglob(f"*{FILE_EXT}"):
-            if name not in path.stem:
-                continue
-            try:
-                fuzzy.append(self._check_member(path))
-            except UnsafePathError:
-                continue
-        if fuzzy:
-            return self._single_match(fuzzy, token)
-
-        matches = []
-        for entry in self.iter_entries(meta_only=True):
-            url = metadata_text(entry.meta, "url")
-            if url and rid(url) == token:
-                matches.append(entry.path)
+        is_id = re.fullmatch(r"[0-9a-f]{12}", token) is not None
+        paths: Iterable[Path] = self._iter_paths("")
+        if is_id:
+            # Only ID-shaped tokens might need headers. Walk once and preserve
+            # partial-name priority without opening anything if a name matches.
+            paths = list(paths)
+        matches = list(self._checked_paths(p for p in paths if name in p.stem))
+        if is_id and not matches:
+            matches = self._id_matches(paths, token)
         return self._single_match(matches, token)

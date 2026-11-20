@@ -355,6 +355,32 @@ def test_export_invalid_utf8_leaves_no_output(tmp_path, capsys):
     assert run(store, "export", "-o", str(output)) == 1
     assert not output.exists()
     assert "not valid UTF-8" in capsys.readouterr().err
+    assert run(store, "export") == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "not valid UTF-8" in captured.err
+
+
+def test_spooled_and_file_exports_match_v1_bytes_across_spill(tmp_path, capsys):
+    store = tmp_path / "store"
+    store.mkdir()
+    entries = []
+    for name in ["a.bm", "z.bm"]:
+        content = CONTENT + "é\r\n" * 150_000
+        (store / name).write_bytes(content.encode())
+        entries.append({"path": name, "content": content})
+    expected = (
+        json.dumps(
+            {"format": BACKUP_FORMAT, "version": 1, "entries": entries},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+    assert run(store, "export") == 0
+    assert capsys.readouterr().out == expected
+    output = tmp_path / "out.json"
+    assert run(store, "export", "-o", str(output)) == 0
+    assert output.read_bytes() == expected.encode()
 
 
 def test_preview_lists_conflicts_in_path_order_without_changes(tmp_path, capsys):

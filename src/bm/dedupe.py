@@ -6,9 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from .errors import BmError, ConflictError
 from .io import build_text
 from .models import Metadata, metadata_tags, metadata_text
+from .paths import bookmark_token
 from .store import Store, StoreEntry
+from .urls import parse_stored_url
 from .utils import iso_now, normalize_url_for_compare, parse_iso
 
 
@@ -163,25 +166,60 @@ class DedupePlan:
     scanned: int
 
 
+def duplicate_key(url: str) -> str:
+    """Use the legacy comparison key, but don't merge structurally damaged URLs."""
+    parse_stored_url(url)
+    return normalize_url_for_compare(url)
+
+
+def _load_candidates(
+    store: Store,
+    paths: list[Path],
+    canonical: str,
+    on_error: Callable[[Path, Exception], None] | None,
+) -> list[StoreEntry]:
+    members = []
+    for path in paths:
+        try:
+            entry = store.read_entry(path, snapshot=True)
+            key = duplicate_key(metadata_text(entry.meta, "url"))
+        except (OSError, BmError, ValueError) as exc:
+            if on_error is not None:
+                on_error(bookmark_token(path.relative_to(store.root)), exc)
+            continue
+        if key != canonical:
+            raise ConflictError(f"bookmark URL changed during dedupe scan: {path}; rerun dedupe")
+        members.append(entry)
+    return members
+
+
 def plan_dedupe(
     store: Store,
     *,
     on_error: Callable[[Path, Exception], None] | None = None,
     on_progress: Callable[[int], None] | None = None,
 ) -> DedupePlan:
-    """Read snapshots once and compute changes without writing anything."""
-    buckets: dict[str, list[StoreEntry]] = {}
+    """Group by header URL, then snapshot and revalidate only possible duplicates."""
+    buckets: dict[str, list[Path]] = {}
     scanned = 0
-    for entry in store.iter_entries(snapshot=True, on_error=on_error):
-        key = normalize_url_for_compare(metadata_text(entry.meta, "url").strip())
+    for entry in store.iter_entries(meta_only=True, on_error=on_error):
+        try:
+            key = duplicate_key(metadata_text(entry.meta, "url"))
+        except ValueError as exc:
+            if on_error is not None:
+                on_error(entry.relative_path, exc)
+            continue
         if not key:
             continue
-        buckets.setdefault(key, []).append(entry)
+        buckets.setdefault(key, []).append(entry.path)
         scanned += 1
         if on_progress:
             on_progress(scanned)
     groups = []
-    for canonical, members in buckets.items():
+    for canonical, paths in buckets.items():
+        if len(paths) < 2:
+            continue
+        members = _load_candidates(store, paths, canonical, on_error)
         if len(members) < 2:
             continue
         survivor = select_survivor(members)

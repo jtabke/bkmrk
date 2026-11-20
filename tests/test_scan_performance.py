@@ -3,6 +3,7 @@
 import builtins
 import os
 import sys
+from argparse import Namespace
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,13 +11,15 @@ from pathlib import Path
 import pytest
 
 from bm.backup import build_backup
-from bm.commands import _collect_rows, _search_entries
+from bm.commands import _collect_rows, _search_entries, cmd_dirs
+from bm.dedupe import plan_dedupe
 from bm.doctor import inspect_store
 from bm.exporting import write_json, write_netscape
 from bm.io import build_text
 from bm.query import SEARCH_FIELDS, FilterSpec, search_rows
 from bm.store import Store
 from bm.urls import ALLOWED_URL_SCHEMES
+from bm.utils import rid
 
 
 @pytest.mark.parametrize("operation", ["backup", "doctor"])
@@ -110,20 +113,58 @@ def scan_store(tmp_path, monkeypatch):
     return store, opened
 
 
-def test_path_filter_does_not_traverse_unrelated_directories(scan_store, monkeypatch):
+@pytest.fixture
+def visited_directories(monkeypatch):
+    visited = set()
+    scandir = os.scandir
+
+    def track(path):
+        visited.add(Path(path))
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", track)
+    return visited
+
+
+def test_path_filter_does_not_traverse_unrelated_directories(scan_store, visited_directories):
     store, _ = scan_store
-    traversed = []
-    original_rglob = Path.rglob
-
-    def track_rglob(path, pattern, **kwargs):
-        traversed.append(path)
-        return original_rglob(path, pattern, **kwargs)
-
-    monkeypatch.setattr(Path, "rglob", track_rglob)
     rows = _collect_rows(store, FilterSpec(path="dev"))
 
     assert sorted(row["path"] for row in rows) == ["dev/keep", "dev/skip"]
-    assert traversed == [store.root / "dev"]
+    assert visited_directories == {store.root / "dev"}
+
+
+def test_dirs_and_missing_name_never_open_bookmarks(scan_store, capsys):
+    store, opened = scan_store
+    cmd_dirs(Namespace(store=str(store.root), json=False))
+    assert capsys.readouterr().out.splitlines() == ["dev", "device", "news"]
+    assert store.resolve("missing-slug") is None
+    assert opened == []
+
+
+def test_id_lookup_reads_headers_only_after_ruling_out_names(scan_store):
+    store, opened = scan_store
+    token = rid("https://keep.example.com")
+    assert store.resolve(token) == store.root / "dev/keep.bm"
+    assert len(opened) == 4 and all(mode == "rb" for _, mode in opened)
+    named = store.root / ("also-" + token + ".bm")
+    named.touch()
+    opened.clear()
+    assert store.resolve(token) == named
+    assert opened == []
+
+
+def test_dedupe_loads_snapshots_only_for_duplicate_candidates(scan_store):
+    store, opened = scan_store
+    plan = plan_dedupe(store)
+    assert len(plan.groups) == 1
+    assert plan.scanned == 4
+    assert Counter(path for path, _ in opened) == {
+        "dev/keep": 1,
+        "dev/skip": 2,
+        "device/other": 2,
+        "news/other": 2,
+    }
 
 
 def test_prefix_includes_exact_bookmark_and_same_named_directory(tmp_path):
@@ -207,7 +248,7 @@ def test_prefix_keeps_broken_bookmark_symlink_warning(tmp_path):
     ],
 )
 def test_export_prefix_skips_reads_and_preserves_output(
-    scan_store, monkeypatch, capsys, fmt, filters, expected_paths
+    scan_store, monkeypatch, capsys, fmt, filters, expected_paths, visited_directories
 ):
     store, opened = scan_store
     original_iter = store.iter_entries
@@ -227,23 +268,16 @@ def test_export_prefix_skips_reads_and_preserves_output(
         export()
     expected_output = capsys.readouterr().out
     opened.clear()
-    traversed = []
-    original_rglob = Path.rglob
-
-    def track_rglob(path, pattern, **kwargs):
-        traversed.append(path)
-        return original_rglob(path, pattern, **kwargs)
-
-    monkeypatch.setattr(Path, "rglob", track_rglob)
+    visited_directories.clear()
     export()
 
     assert capsys.readouterr().out == expected_output
     assert sorted(path for path, _ in opened) == expected_paths
     assert all(mode == "rb" for _, mode in opened)
     if filters.path in {"dev", "/dev/", "dev\\"}:
-        assert traversed == [store.root / "dev"]
+        assert visited_directories == {store.root / "dev"}
     elif filters.path in {"dev/keep", "missing"}:
-        assert traversed == []
+        assert not visited_directories
 
 
 def test_body_search_opens_each_entry_once(scan_store):
