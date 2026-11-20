@@ -338,8 +338,9 @@ title: Test
 
         assert fpath.read_text() == original
 
-    def test_edit_rejects_stale_original(self, tmp_path):
+    def test_edit_rejects_stale_original(self, tmp_path, monkeypatch):
         """A concurrent edit must not be overwritten by the editor result."""
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
         store = tmp_path / "store"
         store.mkdir()
         fpath = store / "test.bm"
@@ -769,6 +770,17 @@ tags: [alpha, beta, gamma]
         # Check that beta was removed
         meta, body = load_entry(fpath)
         assert meta["tags"] == ["alpha", "gamma"]
+
+    @pytest.mark.parametrize("action,tag", [("add", "alpha"), ("rm", "absent")])
+    def test_noop_tags_preserve_exact_file(self, store, monkeypatch, action, tag):
+        path = store / "notes.bm"
+        original = (
+            b"---\r\n# keep\r\ntags: [z, alpha, z]\r\nmodified: yesterday\r\n---\r\n\r\nnotes"
+        )
+        path.write_bytes(original)
+        monkeypatch.setattr("bm.store.Store.write", lambda *a, **kw: pytest.fail("rewrote file"))
+        cmd_tag(argparse.Namespace(store=str(store), id="notes", action=action, tags=[tag]))
+        assert path.read_bytes() == original
 
     def test_tag_bumps_modified(self, tmp_path):
         """Should bump modified timestamp."""

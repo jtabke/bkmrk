@@ -144,6 +144,52 @@ def test_restored_list_paths_select_the_literal_file_for_reads_and_mutations(tmp
     assert capsys.readouterr().out.strip() == "https://example.com/1"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["edit", "--exact-path", "--", "inbox/notes"],
+        ["rm", "--exact-path", "--", "inbox/notes"],
+        ["mv", "--exact-path", "--force", "--", "inbox/notes", "destination"],
+        ["tag", "add", "--exact-path", "--", "inbox/notes", "hn"],
+    ],
+)
+def test_exact_mutation_never_selects_a_fallback(store, write_bm, capsys, monkeypatch, argv):
+    stale = write_bm("inbox/notes", url="https://inbox.test")
+    other = write_bm("archive/notes", url="https://archive.test")
+    destination = write_bm("destination", url="https://destination.test")
+    original = {p: p.read_bytes() for p in (other, destination)}
+    stale.unlink()  # The previously listed source disappeared before the command ran.
+    monkeypatch.setattr("bm.editor.launch_editor", lambda _: pytest.fail("editor launched"))
+    assert Store(store).resolve("inbox/notes") == other  # Legacy discovery still works.
+    assert main(["--store", str(store), *argv]) == 1
+    output = capsys.readouterr()
+    assert not output.out and "not found" in output.err and "inbox/notes" in output.err
+    assert {p: p.read_bytes() for p in store.rglob("*.bm")} == original
+
+
+def test_exact_mutations_use_list_tokens_and_only_affect_the_move_source(
+    store, capsys, monkeypatch
+):
+    path = store / "-My Notes!.bm"
+    path.write_text(build_text({"url": "https://exact.test"}, ""), encoding="utf-8")
+    monkeypatch.setattr("bm.editor.launch_editor", lambda draft: None)
+
+    def run(*args):
+        return main(["--store", str(store), *args])
+
+    assert run("list", "--json") == 0
+    token = json.loads(capsys.readouterr().out)[0]["path"]
+    assert run("tag", "add", "--exact-path", "--", token, "hn") == 0
+    assert load_entry(path)[0]["tags"] == ["hn"]
+    assert run("edit", "--exact-path", "--", token) == 0
+    assert "modified" in load_entry(path)[0]
+    assert run("mv", "--exact-path", "--", token, "Work/Moved Here") == 0
+    moved = capsys.readouterr().out.strip()
+    assert moved == "work/moved-here"  # Destination slug rules have not changed.
+    assert run("rm", "--exact-path", moved) == 0
+    assert not list(store.rglob("*.bm"))
+
+
 @pytest.mark.parametrize("action", ["tag", "edit", "add"])
 def test_parsed_rewrites_never_commit_invalid_utf8(store, capsys, monkeypatch, action):
     path = store / "entry.bm"

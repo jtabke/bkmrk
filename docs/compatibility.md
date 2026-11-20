@@ -29,6 +29,9 @@ not a promise that every command preserves the original bytes.
   Paths normally omit the final `.bm`. For dot-only stems and their namesakes
   (e.g. `.bm`, `..bm`, `.bm.bm`), the CLI displays and accepts the full filename
   so the printed paths remain distinct and never require an empty or traversal token.
+  On `edit`, `rm`, `mv`, and `tag`, explicit `--exact-path` requires the listed source
+  path with no links below the store root and no fallback. It does not pin a previously
+  observed file version or change how move destinations are named.
   Normalized-URL matching does not redefine ID generation.
 - Paths remain store-relative. Absolute paths, traversal, escapes, and the `.git` namespace
   are not supported bookmark destinations. Symlink and platform filename safeguards still
@@ -40,7 +43,7 @@ not a promise that every command preserves the original bytes.
 |---|---|
 | List/search/show/doctor/copy | No bookmark rewrite (`copy` explicitly changes the clipboard) |
 | Move | Moves the file without parsing and re-rendering its content |
-| Tag changes and parsed edits | Retain parsed non-empty unknown fields and notes, but may reformat content; explicit editor changes are authoritative |
+| Tag changes and parsed edits | No-op tag changes preserve exact bytes. Otherwise retain parsed non-empty unknown fields and notes, but may reformat content; explicit editor changes are authoritative |
 | Add with `--force` | Replaces the destination with the newly supplied entry; not a metadata merge |
 | Dedupe | Retains survivor metadata, combines selected standard fields/tags and notes; unknown fields from removed entries are not merged |
 | Netscape import/export | Browser interchange, not complete metadata or notes preservation |

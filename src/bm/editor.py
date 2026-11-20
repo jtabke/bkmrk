@@ -1,4 +1,4 @@
-"""Platform-specific editor launching without shell interpolation."""
+"""Private edit drafts and platform-specific editor launching without shell interpolation."""
 
 import ntpath
 import os
@@ -6,8 +6,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List
+
+from .errors import BmError
+from .io import parse_for_rewrite
+from .models import Metadata, metadata_text
 
 
 def _split_editor_command(editor: str) -> List[str]:
@@ -56,6 +63,39 @@ def _call_windows_editor(cmd: List[str]) -> int:
     shell = ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
     command = f'{subprocess.list2cmdline([shell])} /d /v:off /s /c "{quoted}"'
     return subprocess.call(command, executable=shell, shell=False)
+
+
+@contextmanager
+def edited_bookmark(
+    store_root: Path, destination: Path, initial: bytes
+) -> Generator[tuple[Metadata, str], None, None]:
+    """Edit a private draft; keep the editor's exact bytes if publication fails."""
+    scratch = Path(tempfile.gettempdir()).resolve()
+    if scratch.is_relative_to(store_root.resolve()):
+        raise BmError("set TMPDIR or TEMP to a directory outside the bookmark store before editing")
+    directory = Path(tempfile.mkdtemp(prefix="bm-edit-", dir=scratch))
+    keep = False
+    try:
+        # Editors can replace files (and their modes) or leave sidecars. Keep the
+        # enclosing directory private too, and close the file before launching on Windows.
+        with tempfile.NamedTemporaryFile(dir=directory, suffix=".bm", delete=False) as stream:
+            draft = Path(stream.name)
+            stream.write(initial)
+        launch_editor(draft)
+        meta, body = parse_for_rewrite(draft.read_bytes(), destination)
+        if not metadata_text(meta, "url"):
+            raise BmError("url cleared in editor")
+        try:
+            yield meta, body
+        except (BmError, OSError) as exc:
+            keep = True
+            message = f"{exc}\nEdited draft kept at: {draft}"
+            if isinstance(exc, BmError):
+                raise type(exc)(message, exit_code=exc.exit_code) from exc
+            raise BmError(message, exit_code=2) from exc
+    finally:
+        if not keep:
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def launch_editor(path: Path) -> None:

@@ -6,14 +6,13 @@ import json
 import os
 import re
 import sys
-import tempfile
 import textwrap
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, Tuple
 
 from .errors import BmError, NotFoundError
-from .io import atomic_text_create, build_text, load_entry, load_matching_entry, parse_for_rewrite
+from .io import atomic_text_create, build_text, load_entry, load_matching_entry
 from .models import FILE_EXT, Metadata, default_store, metadata_tags, metadata_text
 from .paths import bookmark_token
 from .query import SEARCH_FIELDS, FilterSpec, QueryRow, collect_rows, passes_filters, search_rows
@@ -334,47 +333,34 @@ def _select_open_row(store: Store, args) -> QueryRow:
 
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
-    from .editor import launch_editor
+    from .editor import edited_bookmark
 
     store = _store_from_args(args)
-    p = store.require_entry(args.id)
-
+    exact_path = getattr(args, "exact_path", False)
+    p = store.require_entry(args.id, exact_path=exact_path)
     original = store.snapshot(p)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=p.parent,
-        prefix=f".{p.name}.",
-        suffix=".edit",
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(original)
-        launch_editor(tmp)
-        meta, body = parse_for_rewrite(tmp.read_bytes(), p)
-        if not metadata_text(meta, "url"):
-            raise BmError("url cleared in editor")
+    with edited_bookmark(store.root, p, original) as (meta, body):
+        if exact_path:
+            store.check_destination(p)  # The editor may have been open during a rename.
         meta["modified"] = iso_now()
         store.write(p, build_text(meta, body), expected=original)
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
 
 
 def cmd_rm(args) -> None:
     """Remove bookmark."""
     store = _store_from_args(args)
-    p = store.require_entry(args.id)
+    p = store.require_entry(args.id, exact_path=getattr(args, "exact_path", False))
     store.delete(p, expected=store.snapshot(p))
 
 
 def cmd_mv(args) -> None:
     """Move/rename bookmark."""
     store = _store_from_args(args)
-    src = store.resolve(args.src)
-    if not src:
-        raise NotFoundError(f"source not found: {args.src!r}; use 'bm list' to find an ID or path")
+    exact_path = getattr(args, "exact_path", False)
+    src = store.resolve(args.src, exact_path=exact_path)
+    if src is None:
+        target = "the exact path" if exact_path else "an ID or path"
+        raise NotFoundError(f"source not found: {args.src!r}; use 'bm list' to find {target}")
     dst = store.path_for(args.dst)
     try:
         store.move(src, dst, expected=store.snapshot(src), force=args.force)
@@ -474,16 +460,16 @@ def cmd_dedupe(args) -> None:
 def cmd_tag(args) -> None:
     """Add or remove tags."""
     store = _store_from_args(args)
-    p = store.require_entry(args.id)
+    p = store.require_entry(args.id, exact_path=getattr(args, "exact_path", False))
     entry = store.read_entry(p, snapshot=True)
     original = entry.snapshot
     meta, body = dict(entry.meta), entry.body
-    cur = set(metadata_tags(meta))
-    if args.action == "add":
-        cur.update([t.strip() for t in args.tags if t.strip()])
-    else:
-        cur.difference_update([t.strip() for t in args.tags if t.strip()])
-    meta["tags"] = sorted(cur)
+    current = set(metadata_tags(meta))
+    requested = {t.strip() for t in args.tags if t.strip()}
+    updated = current | requested if args.action == "add" else current - requested
+    if updated == current:
+        return
+    meta["tags"] = sorted(updated)
     meta["modified"] = iso_now()
     store.write(p, build_text(meta, body), expected=original)
 

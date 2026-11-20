@@ -1,8 +1,6 @@
 """Single and batch capture with advisory duplicate warnings and checked publication."""
 
-import os
 import sys
-import tempfile
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
@@ -10,9 +8,9 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from .dedupe import duplicate_key
-from .errors import BmError
-from .io import build_text, parse_for_rewrite
-from .models import Metadata, metadata_text
+from .errors import BmError, ConflictError
+from .io import build_text, parse_front_matter
+from .models import Metadata, metadata_tags, metadata_text
 from .paths import bookmark_token, normalize_slug, reject_unsafe
 from .store import Store, StoreEntry
 from .urls import inspect_url
@@ -74,29 +72,76 @@ def _warn_existing_urls(store: Store, destination: Path, paths: Iterable[Path]) 
         )
 
 
-def _edit_template(destination: Path, meta: Metadata, body: str) -> tuple[Metadata, str]:
-    from .editor import launch_editor
+def _save_edited_capture(
+    store: Store, path: Path, slug: str, meta: Metadata, body: str, *, force: bool
+) -> str:
+    from .editor import edited_bookmark
 
-    fd, tmp_name = tempfile.mkstemp(suffix=".bm", prefix="bm-")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(build_text(meta, body))
-        launch_editor(tmp)
-        edited, body = parse_for_rewrite(tmp.read_bytes(), destination)
-    finally:
+    store.check_destination(path)
+    original = None
+    if force:
         try:
-            tmp.unlink()
-        except OSError:
+            original = store.snapshot(path)
+        except FileNotFoundError:
             pass
-    if not metadata_text(edited, "url"):
-        raise BmError("url cleared in editor")
-    edited["created"] = meta["created"]
-    return edited, body
+
+    template = build_text(meta, body).encode("utf-8")
+    with edited_bookmark(store.root, path, template) as (edited, body):
+        edited["created"] = meta["created"]
+        content = build_text(edited, body)
+        store.check_destination(path)
+        if original is not None:
+            store.write(path, content, expected=original)
+        else:
+            # Even --force must not replace a file created while the editor was open.
+            try:
+                store.create_entry(path, content)
+            except FileExistsError as exc:
+                raise ConflictError(f"bookmark appeared while editing: {path}") from exc
+    url = metadata_text(edited, "url")
+    if url != meta["url"]:
+        print(
+            f"bm: warning: url changed in editor; entry stored under original slug "
+            f"({slug}). Use `bm mv` to relocate.",
+            file=sys.stderr,
+        )
+    return url
 
 
-def _save_capture(store: Store, args: Namespace, url: str) -> tuple[Path, str]:
-    """Save one bookmark through the same checked create/replace path for all inputs."""
+def _matches_capture(store: Store, path: Path, content: str) -> bool:
+    """Compare the actual destination, not the advisory duplicate-URL map."""
+    store.check_destination(path)
+    entry = store.read_entry(path, snapshot=True)
+    requested, body = parse_front_matter(content)
+    return (
+        metadata_text(entry.meta, "url") == metadata_text(requested, "url")
+        and metadata_text(entry.meta, "title") == metadata_text(requested, "title")
+        and metadata_tags(entry.meta) == metadata_tags(requested)
+        and entry.body.replace("\r\n", "\n") == body.replace("\r\n", "\n")
+    )
+
+
+def _create_capture(
+    store: Store, path: Path, content: str, collision: str, *, resume: bool
+) -> bool:
+    """Create atomically or skip a verified match. A different occupant always wins."""
+    if not path.exists():
+        try:
+            store.create_entry(path, content)
+            return True
+        except FileExistsError:
+            pass  # A concurrent creator won; inspect the live destination below.
+    if resume:
+        if _matches_capture(store, path, content):
+            return False
+        collision += " (different URL, title, tags, or notes; not overwritten)"
+    raise BmError(collision)
+
+
+def _save_capture(
+    store: Store, args: Namespace, url: str, *, resume: bool = False
+) -> tuple[Path, str, bool]:
+    """Return the destination, stored URL, and whether this call saved it."""
     slug = args.id or create_slug_from_url(url)
     if args.path:
         folder = normalize_slug(reject_unsafe(args.path))
@@ -106,8 +151,6 @@ def _save_capture(store: Store, args: Namespace, url: str) -> tuple[Path, str]:
     collision = f"bookmark exists: {slug}"
     if getattr(args, "batch", None) is None:
         collision += " (use --force to overwrite)"
-    if fpath.exists() and not args.force:
-        raise BmError(collision)
 
     meta: Metadata = {
         "url": url,
@@ -120,33 +163,25 @@ def _save_capture(store: Store, args: Namespace, url: str) -> tuple[Path, str]:
         body += "\n"
 
     if args.edit:
-        meta, body = _edit_template(fpath, meta, body)
-        if meta["url"] != url:
-            print(
-                f"bm: warning: url changed in editor; entry stored under original slug "
-                f"({slug}). Use `bm mv` to relocate.",
-                file=sys.stderr,
-            )
+        if not args.force and fpath.exists():
+            raise BmError(collision)
+        return fpath, _save_edited_capture(store, fpath, slug, meta, body, force=args.force), True
 
-    try:
-        if args.force:
-            store.write(fpath, build_text(meta, body))
-        else:
-            store.create_entry(fpath, build_text(meta, body))
-    except FileExistsError as exc:
-        raise BmError(collision) from exc
-    return fpath, metadata_text(meta, "url")
+    content = build_text(meta, body)
+    if args.force:
+        store.write(fpath, content)
+        return fpath, url, True
+    return fpath, url, _create_capture(store, fpath, content, collision, resume=resume)
 
 
 def _add_batch(
     store: Store, args: Namespace, source: str, existing_keys: Iterable[tuple[str, Path]]
 ) -> None:
-    if args.id is not None or args.edit or args.force:
-        raise BmError("--batch cannot be combined with --id, --edit, or --force", exit_code=2)
+    resume = getattr(args, "resume", False)
     stdin = source == "-"
     label = "stdin" if stdin else source
     known: defaultdict[str, set[Path]] = defaultdict(set)
-    saved = 0
+    saved = skipped = 0
     input_stream = nullcontext(sys.stdin) if stdin else Path(source).open(encoding="utf-8")
     with input_stream as stream:
         for number, line in enumerate(stream, 1):
@@ -154,12 +189,15 @@ def _add_batch(
                 continue
             try:
                 url = _validated_capture_url(line, "batch line")
-                path, url = _save_capture(store, args, url)
+                path, url, wrote = _save_capture(store, args, url, resume=resume)
             except (BmError, OSError, UnicodeError) as exc:
                 raise BmError(
                     f"{label}:{number}: {exc}. Batch stopped; bookmarks saved: {saved}.",
                     exit_code=exc.exit_code if isinstance(exc, BmError) else 2,
                 ) from exc
+            if not wrote:
+                skipped += 1
+                continue
             if not saved:
                 for key, existing in existing_keys:
                     known[key].add(existing)
@@ -168,7 +206,9 @@ def _add_batch(
                 known[key].add(path)
             saved += 1
             print(rid(url))
-    if not saved:
+    if skipped:
+        print(f"bm: skipped matching batch entries: {skipped}", file=sys.stderr)
+    elif not saved:
         raise BmError(f"{label}: no URLs to add")
 
 
@@ -180,10 +220,14 @@ def add_bookmarks(
     existing = _stored_url_keys(store.iter_entries(meta_only=True, on_error=on_error))
     batch = getattr(args, "batch", None)
     if batch is not None:
+        if args.id is not None or args.edit or args.force:
+            raise BmError("--batch cannot be combined with --id, --edit, or --force", exit_code=2)
         _add_batch(store, args, batch, existing)
         return
+    if getattr(args, "resume", False):
+        raise BmError("--resume requires --batch", exit_code=2)
     url = _add_url(args.url, clipboard=getattr(args, "clipboard", False))
-    path, url = _save_capture(store, args, url)
+    path, url, _ = _save_capture(store, args, url)
     if key := _capture_key(url):
         _warn_existing_urls(store, path, (p for other_key, p in existing if other_key == key))
     print(rid(url))

@@ -134,6 +134,24 @@ def test_path_filter_does_not_traverse_unrelated_directories(scan_store, visited
     assert visited_directories == {store.root / "dev"}
 
 
+def test_ordinary_scans_do_not_enter_git_even_from_a_literal_prefix(tmp_path, visited_directories):
+    store = Store(tmp_path)
+    url = "https://visible.test"
+    visible = store.path_for("dev/.git")  # .git.bm is a legal sibling of .git/.
+    store.create_entry(visible, build_text({"url": url}, ""))
+    for name in (".git", "dev/.GiT"):
+        objects = store.root / name / "objects"
+        objects.mkdir(parents=True)
+        (objects / "hidden.bm").write_text(build_text({"url": url}, ""), encoding="utf-8")
+
+    assert list(store.iter_paths()) == [visible]
+    assert store.resolve(rid(url)) == visible
+    assert list(store.iter_paths(path_prefix="dev/.git")) == [visible]
+    assert not list(store.iter_paths(path_prefix=".git"))
+    assert not list(store.iter_paths(path_prefix="dev/.GiT/objects"))
+    assert visited_directories == {store.root, store.root / "dev"}
+
+
 def test_dirs_and_missing_name_never_open_bookmarks(scan_store, capsys):
     store, opened = scan_store
     cmd_dirs(Namespace(store=str(store.root), json=False))

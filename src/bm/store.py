@@ -22,6 +22,7 @@ from .paths import (
     bookmark_filename,
     bookmark_token,
     id_to_path,
+    is_reserved_path,
     matches_path_prefix,
     normalize_path_prefix,
     normalize_slug,
@@ -133,6 +134,8 @@ class Store:
             current = current / part
             if current.is_symlink():
                 raise UnsafePathError(f"symlink in bookmark destination: {current}")
+            if current.is_junction():
+                raise UnsafePathError(f"junction in bookmark destination: {current}")
             if not current.exists():
                 continue
             if current == checked:
@@ -141,10 +144,14 @@ class Store:
             elif not current.is_dir():
                 raise UnsafePathError(f"parent is not a directory: {current}")
 
-    def require_entry(self, token: str) -> Path:
+    def require_entry(self, token: str, *, exact_path: bool = False) -> Path:
         """Resolve a bookmark or report the shared actionable not-found diagnostic."""
-        path = self.resolve(token)
+        path = self.resolve(token, exact_path=exact_path)
         if path is None:
+            if exact_path:
+                raise NotFoundError(
+                    f"bookmark path not found: {token!r}; check the path in 'bm list'"
+                )
             raise NotFoundError(
                 f"bookmark not found: {token!r}; use 'bm search <terms>' or 'bm list' "
                 "to find an ID or path"
@@ -261,7 +268,10 @@ class Store:
             if directory.relative.parts:
                 parents = (*parents, directory.path)
             try:
-                if not all(_plain_directory(parent) for parent in parents):
+                # Check the start of a prefix scan as well as discovered directories.
+                if is_reserved_path(directory.relative.as_posix()) or not all(
+                    _plain_directory(parent) for parent in parents
+                ):
                     continue
                 with os.scandir(directory.path) as items:
                     for item in items:
@@ -412,12 +422,18 @@ class Store:
                 raise UnsafePathError(f"broken bookmark link: {path}") from None
             return None
 
-    def resolve(self, token: str) -> Optional[Path]:
-        """Prefer the literal listed path, then the legacy slug, partial name, and ID."""
+    def resolve(self, token: str, *, exact_path: bool = False) -> Optional[Path]:
+        """Try the listed path; only ordinary lookup falls back to slug, partial name, or ID."""
         logical = reject_unsafe(token)
+        if exact_path and logical != token.replace(os.sep, "/"):
+            raise UnsafePathError(f"expected a path as printed by 'bm list': {token!r}")
         literal = bookmark_filename(logical) if logical else ""
         if literal and (exact := self._existing_file(literal)):
+            if exact_path:
+                self.check_destination(exact)
             return exact
+        if exact_path:
+            return None
 
         token = token.strip()
         slug = reject_unsafe(normalize_slug(reject_unsafe(token)))

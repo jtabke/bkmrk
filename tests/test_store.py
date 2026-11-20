@@ -32,6 +32,32 @@ def test_store_resolves_by_id_and_path(tmp_path):
     assert store.resolve("does-not-exist") is None
 
 
+def test_exact_paths_skip_slug_and_id_fallbacks_and_preserve_dot_names(tmp_path, monkeypatch):
+    from bm.utils import rid
+
+    store = Store(tmp_path)
+    slug = store.path_for("my-notes")
+    _write_entry(slug)
+    monkeypatch.setattr(store, "_iter_paths", lambda _: pytest.fail("exact lookup scanned"))
+    assert store.resolve("My Notes!", exact_path=True) is None
+    assert store.resolve(rid("https://example.com"), exact_path=True) is None
+    with pytest.raises(UnsafePathError, match="as printed"):
+        store.resolve("my-notes/", exact_path=True)
+    for name in (".bm", ".bm.bm"):
+        path = tmp_path / name
+        _write_entry(path)
+        assert store.require_entry(name, exact_path=True) == path
+
+
+def test_exact_paths_reject_traversal_and_redirected_directories(tmp_path):
+    store = Store(tmp_path / "store")
+    _write_entry(store.path_for("archive/notes"))
+    (store.root / "inbox").symlink_to(store.root / "archive", target_is_directory=True)
+    for token in ("inbox/notes", "../archive/notes", ".git/notes"):
+        with pytest.raises(UnsafePathError):
+            store.resolve(token, exact_path=True)
+
+
 def test_store_id_match_wins_over_fuzzy_path_match(tmp_path):
     store = Store(tmp_path / "store")
     store.create()

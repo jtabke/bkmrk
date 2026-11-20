@@ -61,15 +61,16 @@ spaces.
 
 ### Bulk tag HN links
 
-Use the listed path rather than the ID: it selects the exact bookmark even when IDs
-are shared and avoids another store-wide lookup for every tag update. This example
-uses Bash for NUL-delimited reads, so spaces and newlines in paths are preserved.
+Pass the listed path with `--exact-path`: shared IDs are harmless, and a file moved
+between listing and tagging produces a “not found” error rather than tagging another
+bookmark with a similar name. This example uses Bash for NUL-delimited reads, so spaces
+and newlines in paths are preserved.
 
 ```bash
 bm list --host news.ycombinator.com --jsonl |
 jq -j '.path, "\u0000"' |
 while IFS= read -r -d '' path; do
-    bm tag add -- "$path" hn
+    bm tag add --exact-path -- "$path" hn || exit 1
 done
 ```
 

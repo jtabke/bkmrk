@@ -2,6 +2,7 @@
 
 import argparse
 import io
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -11,7 +12,7 @@ from bm.commands import (
     cmd_add,
 )
 from bm.errors import BmError, UnsafePathError
-from bm.io import load_entry
+from bm.io import build_text, load_entry
 from bm.store import Store
 from bm.utils import create_slug_from_url, rid
 
@@ -130,6 +131,39 @@ class TestCmdAdd:
         args.force = True
         with patch("bm.editor.launch_editor"):
             cmd_add(args)  # Should succeed
+
+    @pytest.mark.parametrize("change", ["modified", "deleted", "appeared", "unchanged"])
+    def test_force_edit_uses_the_pre_editor_destination(
+        self, store, tmp_path, capsys, monkeypatch, change
+    ):
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        path = store / "entry.bm"
+        if change != "appeared":
+            path.write_bytes(b"old contents")
+        edited = b"---\n# draft\nurl: https://edited.test\n---\nmy notes\n"
+
+        def edit(draft):
+            draft.write_bytes(edited)
+            if change in {"modified", "appeared"}:
+                path.write_bytes(b"new external contents")
+            elif change == "deleted":
+                path.unlink()
+
+        with patch("bm.editor.launch_editor", side_effect=edit):
+            status = run(store, "add", "https://initial.test", "--id", "entry", "--force", "--edit")
+        output = capsys.readouterr()
+        if change == "unchanged":
+            assert status == 0 and output.out.strip() == rid("https://edited.test")
+            assert load_entry(path)[1] == "my notes\n"
+            assert not list(tmp_path.glob("bm-edit-*"))
+        else:
+            assert status == 1 and not output.out
+            draft = Path(output.err.split("Edited draft kept at: ")[1].rstrip("\n"))
+            assert not draft.is_relative_to(store) and draft.read_bytes() == edited
+            if change == "deleted":
+                assert not path.exists()
+            else:
+                assert path.read_bytes() == b"new external contents"
 
     def test_add_edit_replaces_fields_and_preserves_created(self, tmp_path):
         """Editor edits should fully replace meta (only created is preserved)."""
@@ -296,6 +330,67 @@ def test_batch_uses_one_advisory_scan_and_keeps_add_contracts(
         meta, body = load_entry(store / "reading" / (create_slug_from_url(url) + ".bm"))
         assert (meta["url"], meta["tags"], body) == (url, ["inbox"], "Notes\n")
     assert original.read_bytes() == before
+
+
+def test_resume_retries_a_partial_batch_without_rewriting_or_reprinting(store, tmp_path, capsys):
+    first, second = "https://first.test", "https://second.test"
+    source = tmp_path / "urls.txt"
+    args = ["add", "--batch", str(source), "-n", "Docs", "-t", "inbox", "-d", "Reading"]
+    source.write_text(f"{first}\ninvalid line\n", encoding="utf-8")
+    assert run(store, *args) == 1
+    assert capsys.readouterr().out.splitlines() == [rid(first)]
+    path = store / (create_slug_from_url(first) + ".bm")
+    original = path.read_bytes().replace(
+        b"title: Docs", b"# local comment\nx-extra: keep\ntitle: Docs"
+    )
+    original = original.replace(b"\n", b"\r\n")
+    path.write_bytes(original)
+
+    source.write_text(f"{first}\n{second}\n", encoding="utf-8")
+    assert run(store, *args, "--resume") == 0
+    output = capsys.readouterr()
+    assert (
+        output.out.splitlines() == [rid(second)]
+        and "skipped matching batch entries: 1" in output.err
+    )
+    assert path.read_bytes() == original
+
+    with patch.object(Store, "create_entry", side_effect=AssertionError("unexpected create")):
+        assert run(store, *args, "--resume") == 0
+    output = capsys.readouterr()
+    assert not output.out and "skipped matching batch entries: 2" in output.err
+    assert run(store, *args) == 1  # Default batch mode still refuses the collision.
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("different", ["url", "title", "tags", "body"])
+def test_resume_does_not_treat_a_different_capture_as_saved(store, monkeypatch, capsys, different):
+    url = "https://example.test/page"
+    meta = {"url": url, "title": "Docs", "tags": ["inbox"]}
+    body = "Notes\n"
+    if different == "url":
+        meta["url"] = "http://www.example.test/page/#part"  # Same dedupe key, NOT the same URL.
+    elif different == "body":
+        body = "different\n"
+    else:
+        meta[different] = ["other"] if different == "tags" else "other"
+    path = store / (create_slug_from_url(url) + ".bm")
+    before = build_text(meta, body).encode()
+    path.write_bytes(before)
+    monkeypatch.setattr("sys.stdin", io.StringIO(f"{url}\nhttps://later.test\n"))
+    assert (
+        run(store, "add", "--batch", "-", "--resume", "-n", "Docs", "-t", "inbox", "-d", "Notes")
+        == 1
+    )
+    output = capsys.readouterr()
+    assert not output.out and "stdin:1" in output.err and "not overwritten" in output.err
+    assert list(store.iterdir()) == [path] and path.read_bytes() == before
+
+
+def test_resume_is_batch_only(store, capsys):
+    assert run(store, "add", "--resume", "https://example.test") == 2
+    assert "--resume requires --batch" in capsys.readouterr().err
+    assert not list(store.iterdir())
 
 
 @pytest.mark.parametrize("problem", ["bad URL", "collision"])

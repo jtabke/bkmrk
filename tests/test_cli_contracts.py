@@ -151,8 +151,9 @@ def test_real_cli_maps_invalid_path_not_found_and_no_result(tmp_path, capsys):
     assert captured.err == ""
 
 
-def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
-    """Editor failures and optimistic conflicts are visible at the CLI boundary."""
+def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys, monkeypatch):
+    """Keep both sides of a conflict, including the editor's unnormalized draft."""
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     store = tmp_path / "store"
     assert _run(store, "init") == 0
     capsys.readouterr()
@@ -167,14 +168,40 @@ def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
     assert capsys.readouterr().err == "bm: OSError: editor failed\n"
     assert bookmark.read_bytes() == original
 
+    edited = b"---\r\n# my comment\r\nurl: https://draft.test\r\n---\r\nmy edits\r\n"
+
     def edit_and_change_original(path: Path) -> None:
-        del path
+        path.write_bytes(edited)
         bookmark.write_bytes(original + b"\nexternal change\n")
 
     with patch("bm.editor.launch_editor", side_effect=edit_and_change_original):
         assert _run(store, "edit", token) == 1
-    assert "changed since it was read" in capsys.readouterr().err
+    output = capsys.readouterr()
+    assert output.out == "" and "changed since it was read" in output.err
+    draft = Path(output.err.split("Edited draft kept at: ")[1].rstrip("\n"))
+    assert not draft.is_relative_to(store) and draft.read_bytes() == edited
+    if os.name == "posix":
+        assert not (draft.parent.stat().st_mode & 0o077 or draft.stat().st_mode & 0o077)
     assert bookmark.read_bytes() == original + b"\nexternal change\n"
+
+
+def test_exact_edit_rechecks_directory_links_before_saving(store, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    folder = store / "inbox"
+    folder.mkdir()
+    original = b"---\nurl: https://notes.test\n---\noriginal\n"
+    (folder / "notes.bm").write_bytes(original)
+    moved = store / "archive"
+
+    def edit(draft):
+        draft.write_bytes(original + b"my draft\n")
+        folder.rename(moved)
+        folder.symlink_to(moved, target_is_directory=True)
+
+    monkeypatch.setattr("bm.editor.launch_editor", edit)
+    assert _run(store, "edit", "--exact-path", "inbox/notes") == 1
+    assert "Edited draft kept at:" in capsys.readouterr().err
+    assert (moved / "notes.bm").read_bytes() == original
 
 
 def test_module_entry_quietly_handles_downstream_pipe_close(tmp_path):

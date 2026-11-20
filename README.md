@@ -163,8 +163,9 @@ Default store directory is `~/.bookmarks.d` (override via `$BOOKMARKS_DIR`). Eac
 ```
 
 The `.git` directory namespace is reserved at every depth (case-insensitive). New bookmark
-paths cannot target it. Existing `.bm` files there are reported by `doctor` and block
-backup export rather than being silently omitted; preserve and relocate them manually.
+paths cannot target it, and ordinary scans skip it entirely. Existing `.bm` files
+there are reported by `doctor` and block backup export rather than being silently
+omitted; preserve and relocate them manually.
 
 Auto-generated file names are **human readable** and end with a **short hash of the URL** to avoid collisions. Explicit `--id` values and destinations supplied to `bm mv` are used instead and do not need to contain a hash.
 
@@ -202,6 +203,8 @@ Several files can share an ID, including separate bookmarks with the same URL. I
 reports ambiguity instead of choosing the first file; use a complete path to select one.
 A literal path printed by `list` is tried first, preserving spaces, case, and punctuation.
 If absent, lookup tries the normalized slug, then partial filename, then stable ID.
+For scripts mutating a listed path, pass `--exact-path` to `edit`, `rm`, `mv`, or `tag`.
+It disables all three fallbacks: a missing path fails instead of selecting a different file.
 
 ---
 
@@ -245,7 +248,7 @@ rejected before writing. No title is fetched. See [clipboard setup](docs/setup.m
 
 ```bash
 bm add (<url>|--clipboard) [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
-bm add --batch FILE|- [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2]
+bm add --batch FILE|- [--resume] [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2]
 ```
 
 Prints the stable ID on success. If an equivalent normalized URL exists at another path,
@@ -270,6 +273,18 @@ additions. This in-memory map is advisory only; external edits can make warnings
 Each file is created atomically and never overwritten. A bad line or path collision
 stops the batch with a nonzero status; earlier saves remain. `--id`, `--edit`, and
 `--force` are for single capture only.
+
+After correcting a failed input, rerun the same batch with `--resume`:
+
+```bash
+bm add --batch urls.txt --path reading --tags inbox --resume
+```
+
+At an existing destination, `bm` compares the stored URL (not its dedupe key), title,
+tag list, and parsed notes (LF and CRLF are equivalent). A match is skipped without
+rewriting the file; timestamps, comments, and extra metadata are left alone. A mismatch
+still stops the batch. Only newly saved IDs are printed on stdout. An all-matching batch
+succeeds with no stdout.
 
 ### `list`
 
@@ -361,10 +376,21 @@ Clipboard-helper failures exit 2; see [clipboard setup](docs/setup.md#clipboard-
 ### `edit`, `rm`, `mv`
 
 ```bash
-bm edit <ID|path>   # bumps modified timestamp
-bm rm <ID|path>
-bm mv <SRC> <DST> [-f]
+bm edit [--exact-path] <ID|path>   # bumps modified timestamp
+bm rm [--exact-path] <ID|path>
+bm mv [--exact-path] <SRC> <DST> [-f]
 ```
+
+With `--exact-path`, pass the source path **as listed**, normally without the final `.bm`.
+The source cannot be a symlink or traverse a linked directory inside the store. For `mv`
+the destination still follows the usual slug rules. Exact lookup names a path, not a
+particular version of its contents.
+
+If another writer changes the destination while `bm edit` or `bm add --force --edit` is
+open, the save fails instead of overwriting the change. If publishing a valid draft fails,
+stderr gives its path in a private temporary directory outside the store. Compare and
+merge it manually, then remove the recovery directory. Set `TMPDIR` or `TEMP` outside
+the store if your temporary directory is inside it.
 
 `rm` permanently deletes the bookmark file; there is no trash or built-in undo. Recovery
 requires an existing Git snapshot or [complete backup](docs/backup-format.md).
@@ -375,9 +401,12 @@ List discovered tags (from folder segments and header tags), or mutate tags with
 
 ```bash
 bm tags
-bm tag add <ID|path> tag1 tag2
-bm tag rm  <ID|path> tag1
+bm tag add [--exact-path] <ID|path> tag1 tag2
+bm tag rm  [--exact-path] <ID|path> tag1
 ```
+
+Adding only tags already present, or removing only absent tags, leaves the file and its
+`modified` timestamp unchanged.
 
 ### `dirs`
 

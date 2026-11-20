@@ -41,6 +41,14 @@ def _enable_completion(parser: argparse.ArgumentParser) -> None:
         argcomplete.autocomplete(parser)
 
 
+def _add_exact_path_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--exact-path",
+        action="store_true",
+        help="Require the source path printed by 'bm list'; never fall back to a slug, name, or ID",
+    )
+
+
 def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
     """Attach the standard filter flags (tag/host/since/path) to a subparser."""
     parser.add_argument("-t", "--tag", help="Filter by tag (folder segment or header tag)")
@@ -214,6 +222,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     source.add_argument(
         "--batch", metavar="FILE", help="Add one URL per line from FILE or -; never overwrite"
     )
+    p.add_argument(
+        "--resume", action="store_true", help="With --batch, skip existing matching captures"
+    )
     p.add_argument("-n", "--name", help="Title")
     p.add_argument("-t", "--tags", help="Comma-separated tags")
     p.add_argument("-d", "--description", help="Notes / description")
@@ -301,14 +312,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.set_defaults(func="cmd_search")
 
     p = sp.add_parser("edit", help="Edit with $EDITOR / $VISUAL")
+    _add_exact_path_flag(p)
     p.add_argument("id")
     p.set_defaults(func="cmd_edit")
 
     p = sp.add_parser("rm", help="Remove an entry")
+    _add_exact_path_flag(p)
     p.add_argument("id")
     p.set_defaults(func="cmd_rm")
 
     p = sp.add_parser("mv", help="Rename/move an entry")
+    _add_exact_path_flag(p)
     p.add_argument("src")
     p.add_argument("dst")
     p.add_argument("-f", "--force", action="store_true")
@@ -331,6 +345,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.set_defaults(func="cmd_doctor")
 
     p = sp.add_parser("tag", help="Mutate tags without editing")
+    _add_exact_path_flag(p)
     p.add_argument("action", choices=["add", "rm"])
     p.add_argument("id")
     p.add_argument("tags", nargs="+")
