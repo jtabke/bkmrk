@@ -5,11 +5,11 @@ import os
 import re
 import stat
 import tempfile
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 from .errors import BmError, ConflictError
 from .models import FM_END, FM_START, Metadata
@@ -254,20 +254,47 @@ def build_text(meta: Dict[str, Any], body: str) -> str:
     return fm + (body or "")
 
 
-def _read_meta_only(fpath: Path) -> str:
-    """Read through the closing front-matter line without reading the body."""
-    with open(fpath, "rb") as f:
-        first = f.readline()
-        if first.rstrip(b"\r\n") != b"---":
-            # Legacy entries have at most a URL on the first line; the rest is notes.
-            return first.decode("utf-8", errors="replace")
+def _read_header(stream: BinaryIO) -> str:
+    """Consume only the front matter, or the first line of a legacy bookmark."""
+    first = stream.readline()
+    if first.rstrip(b"\r\n") != b"---":
+        return first.decode("utf-8", errors="replace")
 
-        lines = [first]
-        for line in f:
-            lines.append(line)
-            if line.rstrip(b"\r\n") == b"---":
-                break
-        return b"".join(lines).decode("utf-8", errors="replace")
+    lines = [first]
+    for line in stream:
+        lines.append(line)
+        if line.rstrip(b"\r\n") == b"---":
+            break
+    return b"".join(lines).decode("utf-8", errors="replace")
+
+
+def _read_meta_only(fpath: Path) -> str:
+    with open(fpath, "rb") as stream:
+        return _read_header(stream)
+
+
+def load_matching_entry(
+    path: Path, matches: Callable[[Metadata], bool]
+) -> tuple[Metadata, str] | None:
+    """Filter the header, then read matching notes from the same open file."""
+    with open(path, "rb") as stream:
+        prefix = _read_header(stream)
+        parts = _split_front_matter(prefix)
+        if parts is None:
+            # Legacy URLs and incomplete delimiters need the full parser's body rules.
+            meta, _ = parse_front_matter(prefix)
+        else:
+            meta = _normalize_meta(_parse_header(parts[0]))
+        if not matches(meta):
+            return None
+        tail = stream.read().decode("utf-8", errors="replace")
+
+    # Match load_entry's text-mode universal newlines, including for legacy files.
+    if parts is None:
+        _, body = parse_front_matter((prefix + tail).replace("\r\n", "\n").replace("\r", "\n"))
+    else:
+        body = (parts[1] + tail).lstrip("\r\n").replace("\r\n", "\n").replace("\r", "\n")
+    return meta, body
 
 
 def load_entry(fpath: Path, meta_only: bool = False) -> Tuple[Metadata, str]:

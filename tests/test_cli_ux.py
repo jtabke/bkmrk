@@ -95,7 +95,7 @@ def test_failed_export_does_not_publish_partial_output(tmp_path, capsys):
         stream.write("incomplete")
         raise OSError("read failed")
 
-    with patch("bm.commands.write_json", side_effect=fail):
+    with patch("bm.exporting.write_json", side_effect=fail):
         assert main(["export", "json", "--store", str(store), "-o", str(output)]) == 2
     assert capsys.readouterr().out == ""
     assert not output.exists()

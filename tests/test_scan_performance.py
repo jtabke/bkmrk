@@ -142,6 +142,43 @@ def test_dirs_and_missing_name_never_open_bookmarks(scan_store, capsys):
     assert opened == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows resolves short names and reparse points")
+def test_plain_scan_does_not_resolve_each_file(scan_store, monkeypatch):
+    store, _ = scan_store
+    resolved = []
+    resolve = Path.resolve
+
+    def tracked(path, *args, **kwargs):
+        resolved.append(path)
+        return resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", tracked)
+    assert len(list(store.iter_entries(meta_only=True))) == 4
+    assert set(resolved) <= {store.root}
+    assert len(resolved) <= 1
+
+
+def test_buffered_names_do_not_authorize_later_reads(tmp_path, monkeypatch):
+    store = Store(tmp_path / "store")
+    folder = store.root / "nested"
+    folder.mkdir(parents=True)
+    (folder / "item.bm").touch()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    url = "https://example.test/changed"
+    (elsewhere / "item.bm").write_text(build_text({"url": url}, ""), encoding="utf-8")
+    walk = store._iter_paths
+
+    def renamed_after_discovery(prefix):
+        names = list(walk(prefix))
+        folder.rename(tmp_path / "original")
+        folder.symlink_to(elsewhere, target_is_directory=True)
+        yield from names
+
+    monkeypatch.setattr(store, "_iter_paths", renamed_after_discovery)
+    assert store.resolve(rid(url)) is None
+
+
 def test_id_lookup_reads_headers_only_after_ruling_out_names(scan_store):
     store, opened = scan_store
     token = rid("https://keep.example.com")
@@ -323,13 +360,12 @@ def test_metadata_filters_read_bodies_only_for_matches(scan_store, filters):
     )
 
     assert [row["path"] for row in rows] == ["dev/keep"]
-    assert [path for path, mode in opened if mode == "r"] == ["dev/keep"]
     expected_headers = (
         ["dev/keep", "dev/skip"]
         if filters.path
         else ["dev/keep", "dev/skip", "device/other", "news/other"]
     )
-    assert sorted(path for path, mode in opened if mode == "rb") == sorted(expected_headers)
+    assert sorted(opened) == sorted((path, "rb") for path in expected_headers)
 
 
 def test_body_search_rejects_outward_symlinks(tmp_path, capsys):

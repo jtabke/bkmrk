@@ -311,9 +311,9 @@ def test_ambiguous_id_cli_has_no_side_effects(store, write_bm, capsys, command):
     second = write_bm("second", url="https://example.com", body="Second notes")
     original = {path: path.read_bytes() for path in (first, second)}
     with (
-        patch("bm.commands.launch_editor") as editor,
-        patch("bm.commands.webbrowser.open") as browser,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("bm.editor.launch_editor") as editor,
+        patch("webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert (
             main(["--store", str(store), command[0], rid("https://example.com"), *command[1:]]) == 1

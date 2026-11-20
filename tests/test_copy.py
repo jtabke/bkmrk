@@ -18,8 +18,8 @@ def test_copy_url_without_browser_or_mutation(store, write_bm, capsys, token):
     bookmark = write_bm("dev/docs", url="https://example.com/docs", body="Private notes")
     before = bookmark.read_bytes()
     with (
-        patch("bm.commands.write_clipboard") as clipboard,
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "copy", token) == 0
     clipboard.assert_called_once_with("https://example.com/docs")
@@ -40,7 +40,7 @@ def test_copy_invalid_entry_does_not_touch_clipboard(store, write_bm, capsys, ki
         write_bm("a/docs", url="https://a.test")
         write_bm("b/docs", url="https://b.test")
         token = "docs"
-    with patch("bm.commands.write_clipboard") as clipboard:
+    with patch("bm.clipboard.write_clipboard") as clipboard:
         assert run(store, "copy", token) == 1
     clipboard.assert_not_called()
     assert capsys.readouterr().out == ""
@@ -49,7 +49,7 @@ def test_copy_invalid_entry_does_not_touch_clipboard(store, write_bm, capsys, ki
 def test_copy_helper_failure_is_not_reported_as_success(store, write_bm, capsys):
     write_bm("docs", url="https://example.com")
     with patch(
-        "bm.commands.write_clipboard", side_effect=BmError("clipboard unavailable", exit_code=2)
+        "bm.clipboard.write_clipboard", side_effect=BmError("clipboard unavailable", exit_code=2)
     ):
         assert run(store, "copy", "docs") == 2
     output = capsys.readouterr()

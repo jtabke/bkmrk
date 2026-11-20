@@ -97,8 +97,10 @@ Atomic writes and optimistic snapshot checks reduce accidental data loss; they a
 whole-store transaction or protection against every malicious concurrent filesystem change.
 Stop other writers for a coherent backup, and do not share a writable store with untrusted
 users. URL duplicate scans are best-effort and unlocked, can skip damaged/unreadable
-entries, and do not guarantee uniqueness under concurrency. They scan existing metadata
-on each add; no persistent index is introduced.
+entries, and do not guarantee uniqueness under concurrency. Single adds scan current
+metadata. An explicit `add --batch` scans once and updates a process-local map for
+warnings only; it never overwrites and is not a whole-batch transaction. Neither lookup
+nor mutation depends on a persistent index.
 
 Bookmark URLs, titles, and notes are untrusted data. Keep external program launches
 explicit. See [security and robustness](../README.md#security--robustness) and

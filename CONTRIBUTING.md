@@ -87,6 +87,7 @@ The implementation keeps the filesystem backend concrete and separates responsib
 - `bm.io`: tolerant front matter parsing with optional diagnostics, rendering, and atomic persistence
 - `bm.query`: immutable filter values and list/search row logic
 - `bm.netscape`: pure Netscape HTML import/export conversion
+- `bm.capture`: single/batch add, duplicate warnings, and checked publication through the store
 - `bm.importing`: best-effort browser-import execution and structured counts
 - `bm.exporting`: browser/pipeline serializers that write to explicit streams
 - `bm.backup`: versioned exact-content backups, stream output, and restore preflight/execution

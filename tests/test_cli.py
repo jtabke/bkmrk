@@ -198,6 +198,51 @@ def test_parser_only_requests_do_not_import_commands(tmp_path, argv, expected):
     assert result.returncode == 0, result.stderr
 
 
+def test_list_startup_skips_optional_and_unrelated_modules(store):
+    import subprocess
+    from pathlib import Path
+
+    import bm
+
+    env = dict(
+        os.environ, PYTHONPATH=str(Path(bm.__file__).parent.parent), BOOKMARKS_DIR=str(store)
+    )
+    env.pop("_ARGCOMPLETE", None)
+    unused = {
+        "importlib.metadata",
+        "argcomplete",
+        "bm.backup",
+        "bm.capture",
+        "bm.clipboard",
+        "bm.dedupe",
+        "bm.doctor",
+        "bm.editor",
+        "bm.exporting",
+        "bm.fzf",
+        "bm.git",
+        "bm.importing",
+        "webbrowser",
+    }
+    script = (
+        "import sys; before = set(sys.modules); from bm.cli import main; "
+        "assert main(['list']) == 0; "
+        f"assert not ({unused!r} & (sys.modules.keys() - before))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_completion_still_runs_when_requested(store, monkeypatch):
+    completion = Mock()
+    monkeypatch.setitem(sys.modules, "argcomplete", completion)
+    monkeypatch.setenv("_ARGCOMPLETE", "1")
+    assert main(["--store", str(store), "list"]) == 0
+    parser = completion.autocomplete.call_args.args[0]
+    assert parser.parse_args(["add", "--batch", "-"]).batch == "-"
+
+
 def test_module_entry_point_runs():
     """`python -m bm --help` should print usage cleanly."""
     import os

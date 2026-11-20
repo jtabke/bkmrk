@@ -86,7 +86,7 @@ def test_dedupe_continues_past_bad_urls_and_keeps_their_bytes(store, write_bm, c
 
 @pytest.mark.parametrize("allow_scheme", [False, True])
 def test_unparseable_url_never_reaches_browser_even_with_scheme_override(allow_scheme):
-    with patch("bm.commands.webbrowser.open") as browser:
+    with patch("webbrowser.open") as browser:
         with pytest.raises(BmError, match="invalid URL") as error:
             _open_url("https://[broken", allow_scheme=allow_scheme)
     assert error.value.exit_code == 2

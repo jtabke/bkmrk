@@ -30,7 +30,7 @@ def test_direct_open_needs_neither_terminal_nor_fzf(store, write_bm, token, caps
         patch("sys.stdin.isatty", return_value=False),
         patch("sys.stderr.isatty", return_value=False),
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open", return_value=True) as browser,
+        patch("webbrowser.open", return_value=True) as browser,
     ):
         assert run(store, "open", token) == 0
     process.assert_not_called()
@@ -46,8 +46,8 @@ def test_direct_print_or_copy_needs_no_terminal_or_fzf(store, write_bm, capsys, 
         patch("sys.stdin.isatty", return_value=False),
         patch("sys.stderr.isatty", return_value=False),
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open") as browser,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "open", "docs", *action) == 0
     browser.assert_not_called()
@@ -74,8 +74,8 @@ def test_selection_requires_input_and_ui_terminals(
         patch("sys.stdin.isatty", return_value=stdin_tty),
         patch("sys.stderr.isatty", return_value=stderr_tty),
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open") as browser,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "open", *arguments) == 2
     process.assert_not_called()
@@ -95,7 +95,7 @@ def test_selection_allows_redirected_stdout_and_still_confirms_single_result(
     with (
         patch("sys.stdout.isatty", return_value=False),
         patch("bm.fzf.subprocess.run", side_effect=choose_first) as process,
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", "--search", "python", "--print", "url") == 0
     process.assert_called_once()
@@ -109,7 +109,7 @@ def test_unresolved_token_never_falls_back_to_text_search(store, write_bm, capsy
     write_bm("unrelated", url="https://python.example", title="Python", body="Python")
     with (
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", "python") == 1
     process.assert_not_called()
@@ -141,8 +141,8 @@ def test_unresolved_token_never_falls_back_to_text_search(store, write_bm, capsy
 def test_ambiguous_or_irrelevant_options_fail_without_side_effects(store, capsys, arguments):
     with (
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open") as browser,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "open", *arguments) == 2
     process.assert_not_called()
@@ -155,7 +155,7 @@ def test_ambiguous_or_irrelevant_options_fail_without_side_effects(store, capsys
 
 def test_direct_allow_scheme_remains_explicit(store, write_bm):
     write_bm("custom", url="custom:example")
-    with patch("bm.commands.webbrowser.open", return_value=True) as browser:
+    with patch("webbrowser.open", return_value=True) as browser:
         assert run(store, "open", "custom", "--allow-scheme") == 0
     browser.assert_called_once_with("custom:example")
 
@@ -166,8 +166,8 @@ def test_selection_copy_failure_never_opens_browser(store, write_bm, interactive
     write_bm("docs", url="https://example.com")
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.write_clipboard", side_effect=BmError("clipboard failed", exit_code=2)),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard", side_effect=BmError("clipboard failed", exit_code=2)),
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", "--copy") == 2
     browser.assert_not_called()
@@ -180,8 +180,8 @@ def test_search_remains_noninteractive_and_machine_readable(store, write_bm, cap
     write_bm("docs", url="https://example.com", title="Python")
     with (
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.webbrowser.open") as browser,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "search", "python", "--json") == 0
     process.assert_not_called()
@@ -205,7 +205,7 @@ def test_open_selection_prints_without_opening_browser(
     bookmark_factory(store)
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", "--print", field) == 0
     browser.assert_not_called()
@@ -221,7 +221,7 @@ def test_open_selection_opens_selected_url_and_does_not_mutate_store(
     before = path.read_bytes()
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.webbrowser.open", return_value=True) as browser,
+        patch("webbrowser.open", return_value=True) as browser,
     ):
         assert run(store, "open") == 0
     browser.assert_called_once_with("https://example.com")
@@ -286,7 +286,7 @@ def test_open_selection_cancellation_is_quiet_and_opens_nothing(
     result = subprocess.CompletedProcess(["fzf"], status, "")
     with (
         patch("bm.fzf.subprocess.run", return_value=result),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open") == status
     browser.assert_not_called()
@@ -316,7 +316,7 @@ def test_open_selection_rejects_failures_and_forged_selections(
     result = subprocess.CompletedProcess(["fzf"], status, selection)
     with (
         patch("bm.fzf.subprocess.run", return_value=result),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open") == 2
     browser.assert_not_called()
@@ -346,7 +346,7 @@ def test_open_selection_keeps_open_scheme_safeguard(
     bookmark_factory(store, url="javascript:alert(1)")
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open") == 1
     browser.assert_not_called()
@@ -377,7 +377,7 @@ def test_open_selection_prefilters_with_search_terms_and_notes(
 
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose),
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", *arguments) == 0
     browser.assert_not_called()
@@ -388,7 +388,7 @@ def test_open_selection_search_then_opens_selected_website(store, write_bm, inte
     write_bm("docs", url="https://example.com/docs", title="Python")
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.webbrowser.open", return_value=True) as browser,
+        patch("webbrowser.open", return_value=True) as browser,
     ):
         assert run(store, "open", "--search", "python") == 0
     browser.assert_called_once_with("https://example.com/docs")
@@ -398,8 +398,8 @@ def test_open_selection_can_copy_instead_of_opening(store, write_bm, capsys, int
     write_bm("docs", url="https://example.com/docs", title="Python")
     with (
         patch("bm.fzf.subprocess.run", side_effect=choose_first),
-        patch("bm.commands.write_clipboard") as clipboard,
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("bm.clipboard.write_clipboard") as clipboard,
+        patch("webbrowser.open") as browser,
     ):
         assert run(store, "open", "--search", "python", "--copy") == 0
     clipboard.assert_called_once_with("https://example.com/docs")
@@ -412,7 +412,7 @@ def test_open_selection_can_copy_instead_of_opening(store, write_bm, capsys, int
 def test_open_selection_copy_and_print_are_mutually_exclusive(store, interactive_terminal):
     with (
         patch("bm.fzf.subprocess.run") as process,
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "open", "--copy", "--print", "url") == 2
     process.assert_not_called()
@@ -423,7 +423,7 @@ def test_open_selection_cancellation_never_copies(store, write_bm, capsys, inter
     write_bm("docs", url="https://example.com/docs")
     with (
         patch("bm.fzf.subprocess.run", return_value=subprocess.CompletedProcess([], 130, "")),
-        patch("bm.commands.write_clipboard") as clipboard,
+        patch("bm.clipboard.write_clipboard") as clipboard,
     ):
         assert run(store, "open", "--copy") == 130
     clipboard.assert_not_called()

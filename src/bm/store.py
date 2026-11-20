@@ -1,5 +1,6 @@
 """Concrete filesystem boundary for bookmark stores."""
 
+import os
 import re
 import stat
 from collections.abc import Iterable, Iterator
@@ -29,6 +30,23 @@ from .paths import (
     validate_bookmark_name,
 )
 from .utils import rid
+
+
+@dataclass(slots=True)
+class _ScanPath:
+    """A discovered name and its ancestors below the root, not proof of membership."""
+
+    path: Path
+    relative: Path
+    parents: tuple[Path, ...]
+
+
+def _plain_directory(path: Path) -> bool:
+    info = path.lstat()
+    # Windows' name-surrogate bit includes junctions, but not cloud placeholders
+    # that simply supply a directory's contents. POSIX symlinks fail S_ISDIR.
+    redirects = getattr(info, "st_reparse_tag", 0) & 0x20000000
+    return stat.S_ISDIR(info.st_mode) and not redirects
 
 
 @dataclass
@@ -210,9 +228,16 @@ class Store:
     def read_entry(self, path: Path, *, snapshot: bool = False) -> StoreEntry:
         """Load an entry, strictly decoding snapshots intended for a rewrite."""
         checked = self._require_file(self._check_member(path))
-        return self._load_checked(checked, meta_only=False, snapshot=snapshot)
+        return self._load_checked(
+            checked,
+            bookmark_token(checked.relative_to(self.root)),
+            meta_only=False,
+            snapshot=snapshot,
+        )
 
-    def _load_checked(self, checked: Path, *, meta_only: bool, snapshot: bool) -> StoreEntry:
+    def _load_checked(
+        self, checked: Path, token: Path, *, meta_only: bool, snapshot: bool
+    ) -> StoreEntry:
         raw_snapshot = None
         if snapshot:
             raw_snapshot = checked.read_bytes()
@@ -221,71 +246,112 @@ class Store:
             meta, body = load_entry(checked, meta_only=meta_only)
         return StoreEntry(
             path=checked,
-            relative_path=bookmark_token(checked.relative_to(self.root)),
+            relative_path=token,
             meta=meta,
             body=body,
             snapshot=raw_snapshot,
         )
 
-    def _iter_paths(self, prefix: str) -> Generator[Path, None, None]:
-        """Narrow scans to literal prefixes without following directory symlinks."""
+    def _walk(self, start: _ScanPath) -> Iterator[_ScanPath]:
+        """Scan each directory once, retaining relative names and parent chains."""
+        pending = [start]
+        while pending:
+            directory = pending.pop()
+            parents = directory.parents
+            if directory.relative.parts:
+                parents = (*parents, directory.path)
+            try:
+                if not all(_plain_directory(parent) for parent in parents):
+                    continue
+                with os.scandir(directory.path) as items:
+                    for item in items:
+                        try:
+                            child_dir = item.is_dir(follow_symlinks=False)
+                        except OSError:
+                            child_dir = False
+                        bookmark = os.path.normcase(item.name).endswith(FILE_EXT)
+                        if not (child_dir or bookmark):
+                            continue
+                        child = _ScanPath(
+                            directory.path / item.name, directory.relative / item.name, parents
+                        )
+                        if bookmark:
+                            yield child
+                        if child_dir:
+                            pending.append(child)
+            except OSError:
+                # Ordinary scans are best effort. Backup and doctor have stricter walkers.
+                continue
+
+    def _iter_paths(self, prefix: str) -> Iterator[_ScanPath]:
+        start = _ScanPath(self.root, Path(), ())
         if not prefix:
-            yield from self.root.rglob(f"*{FILE_EXT}")
+            yield from self._walk(start)
             return
         try:
-            safe_prefix = reject_unsafe(prefix)
+            safe = reject_unsafe(prefix)
+            validate_bookmark_name(bookmark_filename(prefix))
         except UnsafePathError:
-            safe_prefix = ""
-        if safe_prefix != prefix:
-            # Unusual filters retain their original string-matching semantics.
-            yield from self.root.rglob(f"*{FILE_EXT}")
+            safe = ""
+        if safe != prefix:
+            # Preserve literal string matching for unusual prefixes.
+            yield from self._walk(start)
             return
 
-        directory = self.root
-        for part in prefix.split("/"):
-            directory = directory / part
-            if directory.is_symlink():
-                # rglob does not recurse into directory symlinks. Starting at
-                # one would change that behavior, even for an inward link.
-                yield from self.root.rglob(f"*{FILE_EXT}")
+        folder = Path(prefix)
+        parents = tuple(self.root / p for p in reversed(folder.parents) if p.parts)
+        relative = Path(bookmark_filename(prefix))
+        exact = self.root / relative
+        try:
+            if not all(_plain_directory(parent) for parent in parents):
                 return
-
-        exact = self.root / bookmark_filename(prefix)
-        if exact.exists() or exact.is_symlink():
-            yield exact
-        if directory.is_dir():
-            yield from directory.rglob(f"*{FILE_EXT}")
+            if exact.exists() or exact.is_symlink():
+                yield _ScanPath(exact, relative, parents)
+        except OSError:
+            return
+        yield from self._walk(_ScanPath(self.root / folder, folder, parents))
 
     def _checked_paths(
-        self, paths: Iterable[Path], on_error: Callable[[Path, Exception], None] | None = None
-    ) -> Iterator[Path]:
-        for path in paths:
-            relative = path.relative_to(self.root)
+        self, paths: Iterable[_ScanPath], on_error: Callable[[Path, Exception], None] | None = None
+    ) -> Iterator[tuple[Path, Path]]:
+        for item in paths:
+            token = bookmark_token(item.relative)
             try:
-                # A literal POSIX backslash, for instance, must not be displayed
-                # as a lookup token that would select a different bookmark.
-                checked = self._require_file(self._literal_path(relative.as_posix()))
+                validate_bookmark_name(item.relative.as_posix())
+                # Names come from the walk, but the filesystem can change between yields.
+                # Live lstat of each component below the selected root proves the simple
+                # no-links case without resolving the entire root twice per bookmark.
+                if not all(_plain_directory(parent) for parent in item.parents):
+                    raise UnsafePathError("linked or replaced bookmark directory")
+                info = item.path.lstat()
+                # Windows may resolve short names or other filesystem aliases even
+                # without a symlink. Keep full resolution there and for linked files.
+                if os.name == "nt" or stat.S_ISLNK(info.st_mode):
+                    self._require_file(self._check_member(item.path))
+                elif not stat.S_ISREG(info.st_mode):
+                    raise UnsafePathError(f"not a regular bookmark file: {item.path}")
             except (OSError, UnsafePathError, ValueError) as exc:
                 if on_error is not None:
-                    on_error(bookmark_token(relative), exc)
+                    on_error(token, exc)
                 continue
-            yield checked
+            yield item.path, token
+
+    def iter_named_paths(
+        self, *, path_prefix: str = "", on_error: Callable[[Path, Exception], None] | None = None
+    ) -> Iterator[tuple[Path, Path]]:
+        """Yield live-checked file paths together with their literal lookup tokens."""
+        prefix = normalize_path_prefix(path_prefix)
+        paths = self._iter_paths(prefix)
+        if prefix:
+            paths = (p for p in paths if matches_path_prefix(bookmark_token(p.relative), prefix))
+        yield from self._checked_paths(paths, on_error)
 
     def iter_paths(
         self, *, path_prefix: str = "", on_error: Callable[[Path, Exception], None] | None = None
     ) -> Iterator[Path]:
-        """Yield regular member paths, checking containment without opening bookmarks."""
-        if not self.exists():
-            return
-        prefix = normalize_path_prefix(path_prefix)
-        paths: Iterator[Path] = self._iter_paths(prefix)
-        if prefix:
-            paths = (
-                p
-                for p in paths
-                if matches_path_prefix(bookmark_token(p.relative_to(self.root)), prefix)
-            )
-        yield from self._checked_paths(paths, on_error)
+        """Yield checked regular bookmark paths without opening them."""
+        for path, _ in self.iter_named_paths(path_prefix=path_prefix, on_error=on_error):
+            yield path
 
     def iter_entries(
         self,
@@ -303,12 +369,12 @@ class Store:
         extensionless relative paths before file reads and avoids traversing
         unrelated directories when safe.
         """
-        for path in self.iter_paths(path_prefix=path_prefix, on_error=on_error):
+        for path, token in self.iter_named_paths(path_prefix=path_prefix, on_error=on_error):
             try:
-                entry = self._load_checked(path, meta_only=meta_only, snapshot=snapshot)
+                entry = self._load_checked(path, token, meta_only=meta_only, snapshot=snapshot)
             except (OSError, BmError, ValueError) as exc:
                 if on_error is not None:
-                    on_error(bookmark_token(path.relative_to(self.root)), exc)
+                    on_error(token, exc)
                 continue
             yield entry
 
@@ -324,10 +390,10 @@ class Store:
             )
         return matches[0] if matches else None
 
-    def _id_matches(self, paths: Iterable[Path], token: str) -> list[Path]:
+    def _id_matches(self, paths: Iterable[_ScanPath], token: str) -> list[Path]:
         matches = []
         # Validate each buffered name at read time, not just at discovery time.
-        for path in self._checked_paths(paths):
+        for path, _ in self._checked_paths(paths):
             try:
                 meta, _ = load_entry(path, meta_only=True)
             except (OSError, ValueError):
@@ -360,12 +426,13 @@ class Store:
 
         name = Path(slug).name
         is_id = re.fullmatch(r"[0-9a-f]{12}", token) is not None
-        paths: Iterable[Path] = self._iter_paths("")
+        paths: Iterable[_ScanPath] = self._iter_paths("")
         if is_id:
             # Only ID-shaped tokens might need headers. Walk once and preserve
             # partial-name priority without opening anything if a name matches.
             paths = list(paths)
-        matches = list(self._checked_paths(p for p in paths if name in p.stem))
+        names = (item for item in paths if name in item.path.stem)
+        matches = [path for path, _ in self._checked_paths(names)]
         if is_id and not matches:
             matches = self._id_matches(paths, token)
         return self._single_match(matches, token)

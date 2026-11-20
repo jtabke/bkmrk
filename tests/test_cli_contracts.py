@@ -34,7 +34,7 @@ def test_version_uses_package_metadata_without_creating_store(tmp_path, monkeypa
     """Version is metadata-backed and does not require a command or store."""
     store = tmp_path / "missing-store"
     monkeypatch.setenv("BOOKMARKS_DIR", str(store))
-    with patch("bm.cli.version", return_value="1.2.3") as package_version:
+    with patch("importlib.metadata.version", return_value="1.2.3") as package_version:
         assert main(["--version"]) == 0
     package_version.assert_called_once_with("bkmrk")
     captured = capsys.readouterr()
@@ -47,7 +47,7 @@ def test_source_checkout_without_metadata_still_supports_help_and_version(capsys
     """Running from source does not require installed distribution metadata."""
     from importlib.metadata import PackageNotFoundError
 
-    with patch("bm.cli.version", side_effect=PackageNotFoundError("bkmrk")):
+    with patch("importlib.metadata.version", side_effect=PackageNotFoundError("bkmrk")):
         assert main(["--version"]) == 0
         assert capsys.readouterr().out == "bm unknown (package not installed)\n"
         assert main(["--help"]) == 0
@@ -162,7 +162,7 @@ def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
     token = bookmark.relative_to(store).with_suffix("").as_posix()
     original = bookmark.read_bytes()
 
-    with patch("bm.commands.launch_editor", side_effect=OSError("editor failed")):
+    with patch("bm.editor.launch_editor", side_effect=OSError("editor failed")):
         assert _run(store, "edit", token) == 2
     assert capsys.readouterr().err == "bm: OSError: editor failed\n"
     assert bookmark.read_bytes() == original
@@ -171,7 +171,7 @@ def test_real_cli_maps_editor_and_conflict_failures(tmp_path, capsys):
         del path
         bookmark.write_bytes(original + b"\nexternal change\n")
 
-    with patch("bm.commands.launch_editor", side_effect=edit_and_change_original):
+    with patch("bm.editor.launch_editor", side_effect=edit_and_change_original):
         assert _run(store, "edit", token) == 1
     assert "changed since it was read" in capsys.readouterr().err
     assert bookmark.read_bytes() == original + b"\nexternal change\n"

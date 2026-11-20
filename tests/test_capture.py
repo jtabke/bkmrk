@@ -12,7 +12,8 @@ from bm.commands import (
 )
 from bm.errors import BmError, UnsafePathError
 from bm.io import load_entry
-from bm.utils import rid
+from bm.store import Store
+from bm.utils import create_slug_from_url, rid
 
 
 def run(store, *args):
@@ -37,7 +38,7 @@ class TestCmdAdd:
         args.force = False
         args.edit = False
 
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             cmd_add(args)
 
         # Should create file
@@ -118,16 +119,16 @@ class TestCmdAdd:
         args.force = False
         args.edit = False
 
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             cmd_add(args)
 
         # Second add without force should fail
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             with pytest.raises(BmError):
                 cmd_add(args)
 
         args.force = True
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             cmd_add(args)  # Should succeed
 
     def test_add_edit_replaces_fields_and_preserves_created(self, tmp_path):
@@ -152,7 +153,7 @@ class TestCmdAdd:
             # Simulate user keeping url+title, removing tags, setting notes.
             path.write_text("---\nurl: https://example.com\ntitle: Edited\n---\nedited body\n")
 
-        with patch("bm.commands.launch_editor", side_effect=fake_editor):
+        with patch("bm.editor.launch_editor", side_effect=fake_editor):
             cmd_add(args)
 
         fpath = next(store.glob("*.bm"))
@@ -185,7 +186,7 @@ class TestCmdAdd:
         def change_url(path):
             path.write_text("---\nurl: https://changed.example.com\n---\n")
 
-        with patch("bm.commands.launch_editor", side_effect=change_url):
+        with patch("bm.editor.launch_editor", side_effect=change_url):
             cmd_add(args)
         captured = capsys.readouterr()
         assert "url changed in editor" in captured.err
@@ -211,7 +212,7 @@ class TestCmdAdd:
         def clear_url(path):
             path.write_text("---\ntitle: nothing\n---\n")
 
-        with patch("bm.commands.launch_editor", side_effect=clear_url):
+        with patch("bm.editor.launch_editor", side_effect=clear_url):
             with pytest.raises(BmError):
                 cmd_add(args)
 
@@ -261,6 +262,75 @@ def test_invalid_stdin_url_does_not_create_bookmark(tmp_path, monkeypatch, capsy
     assert "exactly one" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("stdin", [False, True])
+def test_batch_uses_one_advisory_scan_and_keeps_add_contracts(
+    store, tmp_path, write_bm, monkeypatch, capsys, stdin
+):
+    first, second = "https://example.test/docs", "http://www.example.test/docs/#fragment"
+    original = write_bm("original", url=first, body="untouched")
+    before = original.read_bytes()
+    data = f"  {first}  \n\n{second}\n"
+    if stdin:
+        monkeypatch.setattr("sys.stdin", io.StringIO(data))
+        source = "-"
+    else:
+        source = str(tmp_path / "urls.txt")
+        (tmp_path / "urls.txt").write_text(data, encoding="utf-8")
+
+    original_scan = Store.iter_entries
+    scans = []
+
+    def counted_scan(self, **kwargs):
+        scans.append(kwargs)
+        return original_scan(self, **kwargs)
+
+    monkeypatch.setattr(Store, "iter_entries", counted_scan)
+    assert run(store, "add", "--batch", source, "-p", "Reading", "-t", "inbox", "-d", "Notes") == 0
+    output = capsys.readouterr()
+    assert output.out.splitlines() == [rid(first), rid(second)]
+    assert output.err.count("equivalent URL already stored at 'original'") == 2
+    first_slug = create_slug_from_url(first)
+    assert f"equivalent URL already stored at 'reading/{first_slug}'" in output.err
+    assert len(scans) == 1 and scans[0]["meta_only"]
+    for url in (first, second):
+        meta, body = load_entry(store / "reading" / (create_slug_from_url(url) + ".bm"))
+        assert (meta["url"], meta["tags"], body) == (url, ["inbox"], "Notes\n")
+    assert original.read_bytes() == before
+
+
+@pytest.mark.parametrize("problem", ["bad URL", "collision"])
+def test_failed_batch_keeps_only_completed_adds(store, write_bm, monkeypatch, capsys, problem):
+    first = "https://new.example.test"
+    second = "https://existing.example.test"
+    existing = write_bm(create_slug_from_url(second), url=second, body="keep")
+    before = existing.read_bytes()
+    bad = second if problem == "collision" else "does not belong here"
+    monkeypatch.setattr("sys.stdin", io.StringIO(f"{first}\n\n{bad}\nhttps://later.test\n"))
+    assert run(store, "add", "--batch", "-") == 1
+    output = capsys.readouterr()
+    assert output.out.splitlines() == [rid(first)]
+    assert "stdin:3" in output.err and "bookmarks saved: 1" in output.err
+    assert existing.read_bytes() == before
+    assert {p.stem for p in store.glob("*.bm")} == {create_slug_from_url(first), existing.stem}
+
+
+@pytest.mark.parametrize(
+    "extra", [["--id", "same"], ["--edit"], ["--force"], ["--clipboard"], ["https://also.test"]]
+)
+def test_incompatible_batch_options_do_not_read_or_write(store, capsys, extra):
+    assert run(store, "add", "--batch", "-", *extra) == 2
+    assert "batch" in capsys.readouterr().err
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize("text", ["", "\n \t\n", "https://[broken\n", "file:///tmp/local\n"])
+def test_invalid_batch_does_not_write(store, monkeypatch, capsys, text):
+    monkeypatch.setattr("sys.stdin", io.StringIO(text))
+    assert run(store, "add", "--batch", "-") == 1
+    assert capsys.readouterr().out == ""
+    assert not list(store.iterdir())
+
+
 def test_ordinary_add_does_not_read_stdin(tmp_path, capsys):
     store = tmp_path / "store"
     store.mkdir()
@@ -272,9 +342,9 @@ def test_ordinary_add_does_not_read_stdin(tmp_path, capsys):
 def test_add_clipboard_url_with_metadata(store, capsys):
     url = "https://example.com/docs"
     with (
-        patch("bm.commands.read_clipboard", return_value=f"  {url}\r\n") as clipboard,
-        patch("bm.commands.sys.stdin.read") as stdin,
-        patch("bm.commands.webbrowser.open") as browser,
+        patch("bm.clipboard.read_clipboard", return_value=f"  {url}\r\n") as clipboard,
+        patch("sys.stdin.read") as stdin,
+        patch("webbrowser.open") as browser,
     ):
         assert (
             run(store, "add", "--clipboard", "--id", "docs", "--name", "Docs", "--tags", "dev") == 0
@@ -291,7 +361,7 @@ def test_add_clipboard_url_with_metadata(store, capsys):
     "text", ["", " \n", "https://a.test\nhttps://b.test", "https://a.test some notes"]
 )
 def test_bad_clipboard_capture_does_not_write(store, capsys, text):
-    with patch("bm.commands.read_clipboard", return_value=text):
+    with patch("bm.clipboard.read_clipboard", return_value=text):
         assert run(store, "add", "--clipboard") == 1
     assert "clipboard must contain exactly one" in capsys.readouterr().err
     assert not list(store.iterdir())
@@ -299,7 +369,7 @@ def test_bad_clipboard_capture_does_not_write(store, capsys, text):
 
 @pytest.mark.parametrize("source", ["https://example.com", "-"])
 def test_clipboard_and_explicit_input_are_mutually_exclusive(store, capsys, source):
-    with patch("bm.commands.read_clipboard") as clipboard:
+    with patch("bm.clipboard.read_clipboard") as clipboard:
         assert run(store, "add", source, "--clipboard") == 2
     clipboard.assert_not_called()
     assert "not allowed" in capsys.readouterr().err
@@ -317,27 +387,27 @@ def test_clipboard_and_explicit_input_are_mutually_exclusive(store, capsys, sour
     ],
 )
 def test_clipboard_requires_a_structurally_valid_supported_url(store, capsys, text):
-    with patch("bm.commands.read_clipboard", return_value=text):
+    with patch("bm.clipboard.read_clipboard", return_value=text):
         assert run(store, "add", "--clipboard") == 1
     assert "clipboard must contain a valid" in capsys.readouterr().err
     assert not list(store.iterdir())
 
 
 def test_normal_add_never_reads_clipboard(store):
-    with patch("bm.commands.read_clipboard") as clipboard:
+    with patch("bm.clipboard.read_clipboard") as clipboard:
         assert run(store, "add", "https://example.com", "--id", "normal") == 0
     clipboard.assert_not_called()
 
 
 def test_missing_store_does_not_read_clipboard(tmp_path):
-    with patch("bm.commands.read_clipboard") as clipboard:
+    with patch("bm.clipboard.read_clipboard") as clipboard:
         assert run(tmp_path / "missing", "add", "--clipboard") == 1
     clipboard.assert_not_called()
 
 
 def test_clipboard_error_does_not_write(store, capsys):
     with patch(
-        "bm.commands.read_clipboard", side_effect=BmError("clipboard unavailable", exit_code=2)
+        "bm.clipboard.read_clipboard", side_effect=BmError("clipboard unavailable", exit_code=2)
     ):
         assert run(store, "add", "--clipboard") == 2
     output = capsys.readouterr()
@@ -349,7 +419,7 @@ def test_clipboard_error_does_not_write(store, capsys):
 def test_clipboard_duplicate_still_warns_without_replacing(store, write_bm, capsys):
     old = write_bm("original", url="https://example.com/docs", body="Keep")
     before = old.read_bytes()
-    with patch("bm.commands.read_clipboard", return_value="http://www.example.com/docs/#part"):
+    with patch("bm.clipboard.read_clipboard", return_value="http://www.example.com/docs/#part"):
         assert run(store, "add", "--clipboard", "--id", "new") == 0
     assert "equivalent URL already stored at 'original'" in capsys.readouterr().err
     assert old.read_bytes() == before

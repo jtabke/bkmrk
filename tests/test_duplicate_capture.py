@@ -79,7 +79,7 @@ def test_duplicate_detection_uses_edited_url(store, write_bm, capsys):
     def edit(path):
         path.write_text("---\nurl: https://edited.example\n---\n", encoding="utf-8")
 
-    with patch("bm.commands.launch_editor", side_effect=edit):
+    with patch("bm.editor.launch_editor", side_effect=edit):
         assert run(store, "https://original.example", "--id", "new", "--edit") == 0
     output = capsys.readouterr()
     assert output.out == rid("https://edited.example") + "\n"

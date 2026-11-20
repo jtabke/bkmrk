@@ -237,7 +237,7 @@ modified: {old_modified}
         args.id = "test"
 
         # Mock the editor to do nothing
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             # Mock iso_now to return a specific timestamp
             new_modified = "2023-01-16T11:00:00+00:00"
             with patch("bm.commands.iso_now", return_value=new_modified):
@@ -266,7 +266,7 @@ title: Test
         args.id = "test"
 
         # Mock the editor to do nothing
-        with patch("bm.commands.launch_editor"):
+        with patch("bm.editor.launch_editor"):
             # Mock iso_now to return a specific timestamp
             new_modified = "2023-01-16T11:00:00+00:00"
             with patch("bm.commands.iso_now", return_value=new_modified):
@@ -294,7 +294,7 @@ title: Test
             )
 
         args = argparse.Namespace(store=str(store), id="test")
-        with patch("bm.commands.launch_editor", side_effect=fake_editor):
+        with patch("bm.editor.launch_editor", side_effect=fake_editor):
             with patch("bm.commands.iso_now", return_value="2024-01-01T00:00:00+00:00"):
                 cmd_edit(args)
 
@@ -313,7 +313,7 @@ title: Test
         fpath.write_text(original)
 
         args = argparse.Namespace(store=str(store), id="test")
-        with patch("bm.commands.launch_editor", side_effect=OSError("editor failed")):
+        with patch("bm.editor.launch_editor", side_effect=OSError("editor failed")):
             with pytest.raises(OSError, match="editor failed"):
                 cmd_edit(args)
 
@@ -332,7 +332,7 @@ title: Test
             path.write_text("---\ntitle: Missing URL\n---\n")
 
         args = argparse.Namespace(store=str(store), id="test")
-        with patch("bm.commands.launch_editor", side_effect=clear_url):
+        with patch("bm.editor.launch_editor", side_effect=clear_url):
             with pytest.raises(BmError):
                 cmd_edit(args)
 
@@ -351,7 +351,7 @@ title: Test
             fpath.write_text("external change\n")
 
         args = argparse.Namespace(store=str(store), id="test")
-        with patch("bm.commands.launch_editor", side_effect=concurrent_editor):
+        with patch("bm.editor.launch_editor", side_effect=concurrent_editor):
             with pytest.raises(ConflictError):
                 cmd_edit(args)
 

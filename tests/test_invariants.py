@@ -151,7 +151,7 @@ def test_parsed_rewrites_never_commit_invalid_utf8(store, capsys, monkeypatch, a
     damaged = valid + b"damage: \xff\n"
     before = valid if action == "add" else damaged
     path.write_bytes(before)
-    monkeypatch.setattr("bm.commands.launch_editor", lambda temp: temp.write_bytes(damaged))
+    monkeypatch.setattr("bm.editor.launch_editor", lambda temp: temp.write_bytes(damaged))
 
     def run(*args):
         return main(["--store", str(store), *args])

@@ -7,10 +7,38 @@ import os
 import stat
 import sys
 from contextlib import redirect_stdout
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional, Sequence, TextIO
 
 from .errors import BmError
+
+
+class _VersionAction(argparse.Action):
+    """Consult distribution metadata only when argparse processes --version."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            installed = version("bkmrk")
+        except PackageNotFoundError:
+            installed = "unknown (package not installed)"
+        print(f"{parser.prog} {installed}")
+        parser.exit()
+
+
+def _enable_completion(parser: argparse.ArgumentParser) -> None:
+    if "_ARGCOMPLETE" in os.environ:
+        try:
+            import argcomplete
+        except ImportError:
+            return
+        argcomplete.autocomplete(parser)
 
 
 def _add_filter_flags(parser: argparse.ArgumentParser) -> None:
@@ -166,11 +194,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         epilog=first_steps,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    try:
-        package_version = version("bkmrk")
-    except PackageNotFoundError:
-        package_version = "unknown (package not installed)"
-    ap.add_argument("--version", action="version", version=f"%(prog)s {package_version}")
+    ap.add_argument(
+        "--version", action=_VersionAction, nargs=0, help="show program's version number and exit"
+    )
     ap.add_argument(
         "--store",
         help="Path to bookmark store (default: $BOOKMARKS_DIR or ~/.bookmarks.d)",
@@ -185,6 +211,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("url", nargs="?", help="URL, or - to read exactly one URL from stdin")
     source.add_argument("--clipboard", action="store_true", help="Read one URL from the clipboard")
+    source.add_argument(
+        "--batch", metavar="FILE", help="Add one URL per line from FILE or -; never overwrite"
+    )
     p.add_argument("-n", "--name", help="Title")
     p.add_argument("-t", "--tags", help="Comma-separated tags")
     p.add_argument("-d", "--description", help="Notes / description")
@@ -353,13 +382,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _add_command_options(list(sp.choices.values()), (pe, pj))
 
     try:
-        # Optional shell completion (no hard dependency).
-        try:
-            import argcomplete
-        except ImportError:
-            pass
-        else:
-            argcomplete.autocomplete(ap)
+        _enable_completion(ap)
         args = _parse_arguments(ap, argv)
     except KeyboardInterrupt:
         return 130

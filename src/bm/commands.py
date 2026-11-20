@@ -1,37 +1,29 @@
 """Command implementations for the bookmark manager."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
 import sys
 import tempfile
 import textwrap
-import webbrowser
+from collections.abc import Iterator
 from pathlib import Path
-from typing import TextIO, Tuple
+from typing import TYPE_CHECKING, TextIO, Tuple
 
-from .backup import apply_restore, plan_restore, read_backup, write_backup
-from .clipboard import read_clipboard, write_clipboard
-from .dedupe import DedupePlan, apply_dedupe, duplicate_key, plan_dedupe
-from .doctor import inspect_store
-from .editor import launch_editor
 from .errors import BmError, NotFoundError
-from .exporting import write_json, write_netscape
-from .fzf import pick_row
-from .git import inspect_git, run_git
-from .importing import ImportCounts, import_netscape
-from .io import atomic_text_create, build_text, load_entry, parse_for_rewrite
-from .models import FILE_EXT, default_store, metadata_tags, metadata_text
-from .paths import bookmark_token, normalize_slug, reject_unsafe
+from .io import atomic_text_create, build_text, load_entry, load_matching_entry, parse_for_rewrite
+from .models import FILE_EXT, Metadata, default_store, metadata_tags, metadata_text
+from .paths import bookmark_token
 from .query import SEARCH_FIELDS, FilterSpec, QueryRow, collect_rows, passes_filters, search_rows
 from .store import Store
 from .urls import ALLOWED_URL_SCHEMES, inspect_url
-from .utils import (
-    create_slug_from_url,
-    iso_now,
-    parse_iso,
-    rid,
-)
+from .utils import iso_now, parse_iso, rid
+
+if TYPE_CHECKING:
+    from .dedupe import DedupePlan
+    from .importing import ImportCounts
 
 _PROGRESS_EVERY = 500
 
@@ -74,6 +66,8 @@ def cmd_init(args) -> None:
         if (store.root / ".git").exists():
             print("Git repo already exists.")
         else:
+            from .git import run_git
+
             run_git(store.root, "init")
             print("Initialized git repository.")
     readme = store.root / "README.txt"
@@ -102,117 +96,11 @@ def cmd_init(args) -> None:
             pass
 
 
-def _single_capture_url(text: str, source: str) -> str:
-    """Accept one copied/piped URL rather than a batch or arbitrary prose."""
-    url = text.strip()
-    if not url or len(url.splitlines()) != 1 or any(char.isspace() for char in url):
-        raise BmError(f"{source} must contain exactly one non-empty URL, without whitespace")
-    return url
-
-
-def _add_url(value: str | None, *, clipboard: bool = False) -> str:
-    """Read stdin or the clipboard only when explicitly requested."""
-    if clipboard:
-        url = _single_capture_url(read_clipboard(), "clipboard")
-        inspection = inspect_url(url)
-        if not inspection.supported or inspection.problem:
-            raise BmError("clipboard must contain a valid http, https, ftp, ftps, or mailto URL")
-        return url
-    if value is None:
-        raise BmError("provide a URL, - for stdin, or --clipboard", exit_code=2)
-    if value.strip() == "-":
-        return _single_capture_url(sys.stdin.read(), "stdin")
-    return value.strip()
-
-
-def _warn_existing_urls(store: Store, url: str, destination: Path) -> None:
-    """Report advisory matches after saving without redefining bookmark identity."""
-    try:
-        key = duplicate_key(url)
-    except ValueError:
-        return
-    if not key:
-        return
-    matches = []
-    for entry in store.iter_entries(meta_only=True, on_error=_warn_skipped):
-        if entry.path == destination:
-            continue
-        try:
-            existing_key = duplicate_key(metadata_text(entry.meta, "url"))
-        except ValueError:
-            continue
-        if existing_key == key:
-            matches.append(entry.relative_path.as_posix())
-    for match in sorted(matches):
-        print(
-            f"bm: warning: equivalent URL already stored at {match!r}; "
-            "use 'bm show <path>' or 'bm open <path>' to inspect it. "
-            "Saved separately; existing bookmark left unchanged.",
-            file=sys.stderr,
-        )
-
-
 def cmd_add(args) -> None:
-    """Add a new bookmark."""
-    store = _store_from_args(args)
-    store.require_exists(f"store not found: {store.root}. Run `bm init` first.")
-    url = _add_url(args.url, clipboard=getattr(args, "clipboard", False))
-    slug = args.id or create_slug_from_url(url)
-    if args.path:
-        folder = normalize_slug(reject_unsafe(args.path))
-        slug = f"{folder}/{normalize_slug(reject_unsafe(slug))}"
-    slug = reject_unsafe(slug)
-    fpath = store.path_for(slug)
-    if fpath.exists() and not args.force:
-        raise BmError(f"bookmark exists: {slug} (use --force to overwrite)")
+    """Save one bookmark or a batch, loading capture dependencies only on demand."""
+    from .capture import add_bookmarks
 
-    meta = {
-        "url": url,
-        "title": args.name or "",
-        "tags": [t.strip() for t in (args.tags or "").split(",") if t.strip()],
-        "created": iso_now(),
-    }
-    body = (args.description or "").rstrip()
-    if body:
-        body += "\n"
-
-    if args.edit:
-        # Pre-populate a template and open $EDITOR
-        template = build_text(meta, body)
-        fd, tmp_name = tempfile.mkstemp(suffix=".bm", prefix="bm-")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(template)
-            launch_editor(tmp)
-            meta2, body2 = parse_for_rewrite(tmp.read_bytes(), fpath)
-        finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        # Editor is source of truth; preserve only the original created timestamp.
-        original_url = meta["url"]
-        meta = {**meta2, "created": meta["created"]}
-        body = body2
-        if not metadata_text(meta, "url"):
-            raise BmError("url cleared in editor")
-        if meta["url"] != original_url:
-            print(
-                f"bm: warning: url changed in editor; entry stored under original slug "
-                f"({slug}). Use `bm mv` to relocate.",
-                file=sys.stderr,
-            )
-
-    try:
-        if args.force:
-            store.write(fpath, build_text(meta, body))
-        else:
-            store.create_entry(fpath, build_text(meta, body))
-    except FileExistsError as exc:
-        raise BmError(f"bookmark exists: {slug} (use --force to overwrite)") from exc
-    _warn_existing_urls(store, metadata_text(meta, "url"), fpath)
-    print(rid(metadata_text(meta, "url")))
+    add_bookmarks(_store_from_args(args), args, on_error=_warn_skipped)
 
 
 def cmd_show(args) -> None:
@@ -275,6 +163,8 @@ def _copy_url(url: str) -> None:
     """Share explicit clipboard output between direct lookup and interactive selection."""
     if not url:
         raise BmError("no url in entry")
+    from .clipboard import write_clipboard
+
     write_clipboard(url)
     print("Copied URL to clipboard.", file=sys.stderr)
 
@@ -292,6 +182,8 @@ def _open_url(url: str, *, allow_scheme: bool = False) -> None:
             f"refusing to open {scheme!r} URL "
             f"(use 'bm open <ID|path> --allow-scheme' to override intentionally): {url}"
         )
+    import webbrowser
+
     ok = webbrowser.open(url)
     print(url)
     if not ok:
@@ -369,26 +261,29 @@ def _search_regex_from_args(args) -> bool:
     return use_regex
 
 
-def _search_entries(store: Store, filters: FilterSpec, fields: Tuple[str, ...]):
-    """Read bodies once unless metadata filters can avoid loading them."""
+def _search_entries(
+    store: Store, filters: FilterSpec, fields: Tuple[str, ...]
+) -> Iterator[tuple[Path, Metadata, str]]:
+    """Open each candidate once; read its notes only if a body query needs them."""
     needs_body = "body" in fields
-    # Path filters run before reads; metadata filters can reject large bodies
-    # after reading only the header. Otherwise, load each entry just once.
-    full_read = needs_body and not (filters.tag or filters.host or filters.since)
-    for entry in store.iter_entries(
-        meta_only=not full_read,
-        path_prefix=filters.path,
-        on_error=_warn_skipped,
-    ):
-        if not passes_filters(entry.relative_path, entry.meta, filters, on_error=_warn_skipped):
-            continue
-        body = entry.body
-        if needs_body and not full_read:
+    if needs_body and (filters.tag or filters.host or filters.since):
+        for path, token in store.iter_named_paths(path_prefix=filters.path, on_error=_warn_skipped):
             try:
-                _, body = load_entry(entry.path)
-            except (OSError, ValueError, UnicodeError):
+                result = load_matching_entry(
+                    path, lambda meta: passes_filters(token, meta, filters, on_error=_warn_skipped)
+                )
+            except (OSError, ValueError) as exc:
+                _warn_skipped(token, exc)
                 continue
-        yield entry.relative_path, entry.meta, body
+            if result is not None:
+                yield token, *result
+        return
+
+    for entry in store.iter_entries(
+        meta_only=not needs_body, path_prefix=filters.path, on_error=_warn_skipped
+    ):
+        if passes_filters(entry.relative_path, entry.meta, filters, on_error=_warn_skipped):
+            yield entry.relative_path, entry.meta, entry.body
 
 
 def cmd_search(args) -> None:
@@ -432,11 +327,15 @@ def _select_open_row(store: Store, args) -> QueryRow:
     )
     if not rows:
         raise BmError("no bookmarks match; use 'bm list' or adjust the search terms/filters")
+    from .fzf import pick_row
+
     return pick_row(rows)
 
 
 def cmd_edit(args) -> None:
     """Edit a temporary copy, then atomically commit a validated result."""
+    from .editor import launch_editor
+
     store = _store_from_args(args)
     p = store.require_entry(args.id)
 
@@ -505,8 +404,8 @@ def cmd_dirs(args) -> None:
     """List known directory prefixes."""
     store = _store_from_args(args)
     dirs = set()
-    for path in store.iter_paths(on_error=_warn_skipped):
-        parts = path.relative_to(store.root).parts
+    for _, token in store.iter_named_paths(on_error=_warn_skipped):
+        parts = token.parts
         for i in range(1, len(parts)):
             dirs.add("/".join(parts[:i]))
     all_dirs = sorted(dirs)
@@ -519,6 +418,8 @@ def cmd_dirs(args) -> None:
 
 def _apply_dedupe_with_guidance(store: Store, plan: DedupePlan) -> None:
     """Preserve failure types/statuses while making possible partial progress explicit."""
+    from .dedupe import apply_dedupe
+
     try:
         apply_dedupe(store, plan)
     except (OSError, BmError) as exc:
@@ -533,6 +434,8 @@ def _apply_dedupe_with_guidance(store: Store, plan: DedupePlan) -> None:
 
 def cmd_dedupe(args) -> None:
     """Merge duplicate bookmarks based on normalized URLs."""
+    from .dedupe import plan_dedupe
+
     store = _store_from_args(args)
     store.require_exists(f"store not found: {store.root}")
 
@@ -602,12 +505,18 @@ def cmd_export(args) -> None:
 def _render_export(args, store: Store, stream: TextIO) -> None:
     """Serialize directly into a supplied stream, without redirecting global stdout."""
     if args.fmt is None:
+        from .backup import write_backup
+
         write_backup(store, stream, staged=getattr(args, "output", None) is not None)
         return
     filters = _filter_spec_from_args(args)
     if args.fmt == "netscape":
+        from .exporting import write_netscape
+
         write_netscape(store, filters, stream, on_error=_warn_skipped)
     elif args.fmt == "json":
+        from .exporting import write_json
+
         jsonl = vars(args).get("jsonl", False)
         if not isinstance(jsonl, bool):
             raise BmError("--jsonl must be a boolean", exit_code=2)
@@ -618,6 +527,8 @@ def _render_export(args, store: Store, stream: TextIO) -> None:
 
 def _import_backup(args, store: Store, text: str) -> None:
     """Preflight a complete backup and report conflicts before writing."""
+    from .backup import apply_restore, plan_restore, read_backup
+
     plan = plan_restore(store, read_backup(text), ALLOWED_URL_SCHEMES, force=args.force)
     dry_run = getattr(args, "dry_run", False)
     if dry_run or plan.conflicts:
@@ -664,6 +575,8 @@ def cmd_import(args) -> None:
             raise BmError("backup must be valid UTF-8") from exc
         _import_backup(args, store, text)
         return
+    from .importing import import_netscape
+
     counts = import_netscape(
         store,
         text,
@@ -698,6 +611,9 @@ def _report_netscape_import(counts: ImportCounts, dry_run: bool) -> None:
 
 def cmd_doctor(args) -> None:
     """Report problems without repair, network access, or browser/editor launches."""
+    from .doctor import inspect_store
+    from .git import inspect_git
+
     store = _store_from_args(args)
     report = inspect_store(store, ALLOWED_URL_SCHEMES)
     if store.exists():
@@ -722,6 +638,8 @@ def cmd_doctor(args) -> None:
 
 def cmd_sync(args) -> None:
     """Sync with git."""
+    from .git import run_git
+
     store = _store_from_args(args)
     if not (store.root / ".git").exists():
         raise BmError("store is not a git repo; run: bm init --git", exit_code=2)

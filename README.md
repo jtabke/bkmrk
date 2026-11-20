@@ -245,6 +245,7 @@ rejected before writing. No title is fetched. See [clipboard setup](docs/setup.m
 
 ```bash
 bm add (<url>|--clipboard) [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2] [--id SLUG] [--edit] [-f]
+bm add --batch FILE|- [-n TITLE] [-t tag1,tag2] [-d NOTES] [-p dir1/dir2]
 ```
 
 Prints the stable ID on success. If an equivalent normalized URL exists at another path,
@@ -254,6 +255,21 @@ bookmarks are left unchanged. Matching uses the same heuristic as `dedupe` (incl
 ignoring HTTP/HTTPS differences and fragments), not a guarantee of identical content.
 Same-path collisions still fail unless `--force` explicitly replaces that destination.
 The best-effort metadata scan is not a uniqueness lock; concurrent adds can race.
+
+For many URLs, use `--batch` rather than launching one process per URL:
+
+```bash
+bm add --batch urls.txt --path reading --tags inbox
+printf '%s\n' 'https://example.com/a' 'https://example.com/b' | bm add --batch -
+```
+
+Supply one URL per line (UTF-8 for files); blank lines are ignored. The same URL
+validation as `--clipboard` applies. Each successful save prints its ID in input order.
+The batch scans existing headers once for duplicate warnings and remembers its own
+additions. This in-memory map is advisory only; external edits can make warnings stale.
+Each file is created atomically and never overwritten. A bad line or path collision
+stops the batch with a nonzero status; earlier saves remain. `--id`, `--edit`, and
+`--force` are for single capture only.
 
 ### `list`
 

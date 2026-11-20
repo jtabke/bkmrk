@@ -16,6 +16,7 @@ from bm.io import (
     atomic_write,
     build_text,
     load_entry,
+    load_matching_entry,
     parse_front_matter,
 )
 
@@ -232,6 +233,41 @@ def test_legacy_metadata_scan_does_not_read_notes(tmp_path, monkeypatch):
         meta, body = load_entry(tmp_path / "legacy.bm", meta_only=True)
         assert meta["url"] == "https://example.com/docs" and body == ""
         assert stream.tell() == len(first)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"---\r\nurl: https://example.test\r\n---\r\n\r\na\rb\r\nc\n",
+        b"https://example.test\r\n\r\nlegacy notes\xff\r\n",
+        b"ordinary notes\r\nmore\n",
+        b"---\nurl: https://example.test\nno closing delimiter\n",
+        b"---\rurl: https://example.test\r---\rnotes",
+        b"---\nnotes: |\n  first\n  next\n---",
+        b"",
+    ],
+)
+def test_matching_read_preserves_header_and_full_text_semantics(tmp_path, content):
+    path = tmp_path / "entry.bm"
+    path.write_bytes(content)
+    meta, _ = load_entry(path, meta_only=True)
+    _, body = load_entry(path)
+    assert load_matching_entry(path, lambda header: header == meta) == (meta, body)
+
+
+@pytest.mark.parametrize("header", [b"---\nurl: https://skip.test\n---\n", b"https://skip.test\n"])
+def test_rejected_header_does_not_consume_notes(tmp_path, monkeypatch, header):
+    import bm.io as io_mod
+
+    @contextmanager
+    def guarded_open(path, mode):
+        assert mode == "rb"
+        with BytesIO(header + b"large notes" * 10000) as stream:
+            yield stream
+            assert stream.tell() == len(header)
+
+    monkeypatch.setattr(io_mod, "open", guarded_open, raising=False)
+    assert load_matching_entry(tmp_path / "skip.bm", lambda meta: False) is None
 
 
 def test_block_scalar_keys_are_not_duplicate_header_fields():
